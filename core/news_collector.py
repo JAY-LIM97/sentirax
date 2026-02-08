@@ -1,7 +1,7 @@
 import requests
 from datetime import datetime, timedelta
 from typing import List, Dict
-from config import Config
+from .config import Config
 
 class NewsCollector:
     """NewsAPI를 통한 뉴스 수집"""

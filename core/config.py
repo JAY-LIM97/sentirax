@@ -10,9 +10,9 @@ class Config:
     NEWSAPI_KEY = os.getenv("NEWSAPI_KEY")
     ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
     GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")  # 추가
-    
+    GROQ_API_KEY = os.getenv("GROQ_API_KEY")      #
     # LLM 선택 ('claude' 또는 'gemini')
-    LLM_PROVIDER = 'gemini'  # 기본값을 gemini로 변경
+    LLM_PROVIDER = 'groq'  # 기본값을 gemini로 변경
     
     # 분석 설정
     NEWS_DAYS_BACK = 7

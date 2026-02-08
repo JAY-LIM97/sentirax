@@ -1,5 +1,5 @@
 from typing import Dict, List
-from config import Config
+from .config import Config
 import json
 import re
 
