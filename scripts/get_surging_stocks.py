@@ -9,9 +9,11 @@
 import sys
 import os
 import io
+import platform
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+if platform.system() == 'Windows':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 import yfinance as yf
 import pandas as pd
@@ -28,7 +30,7 @@ SCAN_UNIVERSE = [
     'ACN', 'DHR', 'TXN', 'NEE', 'PM', 'UNP', 'RTX', 'LOW', 'INTC', 'QCOM',
     # 고변동성 + 밈주식
     'PLTR', 'SOFI', 'RIVN', 'LCID', 'NIO', 'MARA', 'COIN', 'HOOD', 'SNAP', 'PINS',
-    'ROKU', 'SQ', 'SHOP', 'SNOW', 'DKNG', 'CRWD', 'ZS', 'PANW', 'SMCI', 'ARM',
+    'ROKU', 'XYZ', 'SHOP', 'SNOW', 'DKNG', 'CRWD', 'ZS', 'PANW', 'SMCI', 'ARM',
     # 바이오/헬스케어
     'MRNA', 'BNTX', 'REGN', 'VRTX', 'ISRG', 'GILD', 'AMGN', 'BMY', 'BIIB', 'ILMN',
     # 에너지/금융

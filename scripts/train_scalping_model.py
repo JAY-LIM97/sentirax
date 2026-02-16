@@ -12,9 +12,11 @@ yfinance 최소 단위가 1분이므로 1분봉 사용 (10초 데이터 미지�
 import sys
 import os
 import io
+import platform
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+if platform.system() == 'Windows':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

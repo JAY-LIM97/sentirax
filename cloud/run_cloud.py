@@ -24,8 +24,9 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, PROJECT_ROOT)
 os.chdir(PROJECT_ROOT)
 
-# UTF-8
-if hasattr(sys.stdout, 'buffer'):
+# UTF-8 (Windows cp949 환경에서만 필요)
+import platform
+if platform.system() == 'Windows' and hasattr(sys.stdout, 'buffer'):
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
     sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
