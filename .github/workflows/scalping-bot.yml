@@ -1,0 +1,49 @@
+name: Scalping Bot (2hr)
+
+on:
+  schedule:
+    # 매일 KST 23:35 = UTC 14:35 (겨울) / 월~금만
+    - cron: '35 14 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  scalping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 150  # 2시간 + 여유 30분
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r cloud/requirements-cloud.txt
+
+      - name: Refresh surging stocks + retrain scalping models
+        env:
+          HT_API_KEY: ${{ secrets.HT_API_KEY }}
+          HT_API_SECRET_KEY: ${{ secrets.HT_API_SECRET_KEY }}
+          HT_API_FK_KEY: ${{ secrets.HT_API_FK_KEY }}
+          HT_API_FK_SECRET_KEY: ${{ secrets.HT_API_FK_SECRET_KEY }}
+        run: python cloud/run_cloud.py --refresh
+
+      - name: Run Scalping Bot (2hr continuous)
+        env:
+          HT_API_KEY: ${{ secrets.HT_API_KEY }}
+          HT_API_SECRET_KEY: ${{ secrets.HT_API_SECRET_KEY }}
+          HT_API_FK_KEY: ${{ secrets.HT_API_FK_KEY }}
+          HT_API_FK_SECRET_KEY: ${{ secrets.HT_API_FK_SECRET_KEY }}
+        run: python cloud/run_cloud.py --scalping-continuous
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scalping-logs-${{ github.run_number }}
+          path: logs/
+          retention-days: 7
