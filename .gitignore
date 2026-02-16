@@ -34,6 +34,7 @@ debug_*.py
 
 # 로그
 *.log
+logs/
 
 # Distribution / packaging
 build/
