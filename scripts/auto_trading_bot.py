@@ -17,6 +17,7 @@ Sentirax 자동매매 봇
 import sys
 import os
 import io
+import json
 import pickle
 
 # Windows 한글/이모지 출력 설정
@@ -32,6 +33,17 @@ from datetime import datetime, timedelta
 
 from core.feature_engineer import FeatureEngineer
 from core.kis_trading_api import KISTradingAPI
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def load_strategy_config() -> dict:
+    """strategy.json 실시간 로드"""
+    config_path = os.path.join(PROJECT_ROOT, 'config', 'strategy.json')
+    if os.path.exists(config_path):
+        with open(config_path) as f:
+            return json.load(f)
+    return {}
 
 # TOP 20 종목 중 모델 저장된 14개 (500일 백테스팅 통과)
 TOP20_TICKERS = ['NVDA', 'AAPL', 'GOOGL', 'MSFT', 'AMZN', 'META', 'TSLA', 'AVGO',
@@ -283,46 +295,80 @@ class AutoTradingBot:
 
     def run_once(self, tickers: list = None, execute: bool = False):
         """
-        한 번 실행 (모든 종목 예측)
-
-        Args:
-            tickers: 종목 리스트 (None이면 TOP10)
-            execute: True면 실제 주문 실행
+        한 번 실행 (전략 설정 반영)
         """
+        config = load_strategy_config()
+        swing_cfg = config.get('swing', {})
+        risk_cfg = config.get('risk', {})
+
+        # 긴급 정지
+        if risk_cfg.get('stop_all_trading', False):
+            print("\n  !! EMERGENCY STOP - stop_all_trading=true")
+            return
+
+        if not swing_cfg.get('enabled', True):
+            print("\n  !! Swing trading disabled in strategy.json")
+            return
+
         if tickers is None:
             tickers = TOP20_TICKERS
 
+        # 전략 설정 반영
+        min_prob = swing_cfg.get('min_probability', 0.55)
+        order_qty = swing_cfg.get('order_quantity', 1)
+        disabled = [t.upper() for t in swing_cfg.get('disabled_tickers', [])]
+        forced_buy = [t.upper() for t in swing_cfg.get('forced_buy_tickers', [])]
+        forced_sell = [t.upper() for t in swing_cfg.get('forced_sell_tickers', [])]
+
+        # 비활성 종목 제외
+        tickers = [t for t in tickers if t not in disabled]
+
         print("\n\n" + "=" * 70)
-        print("🚀 자동매매 봇 실행")
+        print("Swing Trading Bot (strategy.json live)")
         print("=" * 70)
-        print(f"  - 대상 종목: {len(tickers)}개")
-        print(f"  - 실제 주문: {'예' if execute else '아니오 (예측만)'}")
+        print(f"  Tickers: {len(tickers)} | MinProb: {min_prob} | Qty: {order_qty}")
+        if disabled:
+            print(f"  Disabled: {disabled}")
+        if forced_buy:
+            print(f"  Forced BUY: {forced_buy}")
+        if forced_sell:
+            print(f"  Forced SELL: {forced_sell}")
         print()
 
         results = []
 
+        # 강제 매수 처리
+        for ticker in forced_buy:
+            if execute:
+                print(f"\n  FORCED BUY: {ticker}")
+                self.api.order_buy(ticker, order_qty, price=0)
+
+        # 강제 매도 처리
+        for ticker in forced_sell:
+            if execute:
+                print(f"\n  FORCED SELL: {ticker}")
+                self.api.order_sell(ticker, order_qty, price=0)
+
         for ticker in tickers:
             try:
-                # 예측
                 prediction = self.predict_signal(ticker)
 
                 if prediction:
                     results.append(prediction)
 
-                    # 실제 주문
-                    if execute:
-                        print(f"\n💰 실제 주문 실행...")
+                    if execute and prediction['buy_probability'] >= min_prob:
+                        print(f"\n  Executing order...")
                         order_result = self.execute_trade(
                             ticker,
                             prediction['signal'],
                             prediction['price'],
-                            quantity=1
+                            quantity=order_qty
                         )
 
                         if order_result:
-                            print(f"✅ 주문 성공!")
+                            print(f"  Order success!")
                         else:
-                            print(f"❌ 주문 실패")
+                            print(f"  Order failed")
 
             except Exception as e:
                 print(f"\n❌ {ticker} 오류: {e}")

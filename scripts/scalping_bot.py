@@ -11,6 +11,7 @@ import sys
 import os
 import io
 import time
+import json
 import pickle
 
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
@@ -24,6 +25,46 @@ import yfinance as yf
 from datetime import datetime, timedelta
 
 from core.kis_trading_api import KISTradingAPI
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
+def load_strategy_config() -> dict:
+    """strategy.json에서 실시간 전략 설정 로드 (GitHub에서 수정 가능)"""
+    config_path = os.path.join(PROJECT_ROOT, 'config', 'strategy.json')
+
+    # GitHub Actions에서는 git pull로 최신 설정 가져오기
+    if os.environ.get('GITHUB_ACTIONS'):
+        try:
+            os.system(f'cd {PROJECT_ROOT} && git pull origin main --quiet 2>/dev/null')
+        except Exception:
+            pass
+
+    if os.path.exists(config_path):
+        with open(config_path) as f:
+            return json.load(f)
+
+    # 기본값
+    return {
+        'scalping': {
+            'enabled': True,
+            'max_positions': 5,
+            'min_probability': 0.55,
+            'order_quantity': 1,
+            'scan_interval_seconds': 60,
+            'tp_override': None,
+            'sl_override': None,
+            'disabled_tickers': [],
+            'forced_buy_tickers': [],
+            'only_tickers': []
+        },
+        'risk': {
+            'max_daily_loss_pct': -10.0,
+            'max_total_positions': 20,
+            'stop_all_trading': False,
+            'paper_trading': True
+        }
+    }
 
 
 # 스캘핑 Feature 생성 함수 (train_scalping_model.py와 동일)
@@ -241,18 +282,55 @@ class ScalpingBot:
 
     def run_scalping_cycle(self, models: dict, max_positions: int = 5, execute: bool = False):
         """
-        스캘핑 1사이클 실행
-
-        Args:
-            models: 로드된 모델들
-            max_positions: 최대 동시 포지션 수
-            execute: True면 실제 주문 실행
+        스캘핑 1사이클 실행 (매 사이클마다 strategy.json 실시간 반영)
         """
+
+        # 전략 설정 실시간 로드
+        config = load_strategy_config()
+        scalp_cfg = config.get('scalping', {})
+        risk_cfg = config.get('risk', {})
+
+        # 긴급 정지 체크
+        if risk_cfg.get('stop_all_trading', False):
+            print(f"\n  !! EMERGENCY STOP - stop_all_trading=true in strategy.json")
+            return
+
+        if not scalp_cfg.get('enabled', True):
+            print(f"\n  !! Scalping disabled in strategy.json")
+            return
+
+        # 설정 반영
+        max_positions = scalp_cfg.get('max_positions', max_positions)
+        min_prob = scalp_cfg.get('min_probability', 0.55)
+        order_qty = scalp_cfg.get('order_quantity', 1)
+        tp_override = scalp_cfg.get('tp_override')
+        sl_override = scalp_cfg.get('sl_override')
+        disabled = [t.upper() for t in scalp_cfg.get('disabled_tickers', [])]
+        forced_buy = [t.upper() for t in scalp_cfg.get('forced_buy_tickers', [])]
+        only_tickers = [t.upper() for t in scalp_cfg.get('only_tickers', [])]
 
         print(f"\n{'='*70}")
         print(f"  Scalping Cycle - {datetime.now().strftime('%H:%M:%S')}")
-        print(f"  Positions: {len(self.positions)}/{max_positions}")
+        print(f"  Positions: {len(self.positions)}/{max_positions} | "
+              f"MinProb: {min_prob} | Qty: {order_qty}")
+        if disabled:
+            print(f"  Disabled: {disabled}")
+        if forced_buy:
+            print(f"  Forced BUY: {forced_buy}")
+        if only_tickers:
+            print(f"  Only tickers: {only_tickers}")
         print(f"{'='*70}")
+
+        # 일일 손실 체크
+        total_pnl = sum(t['pnl_pct'] for t in self.trade_log) if self.trade_log else 0
+        max_daily_loss = risk_cfg.get('max_daily_loss_pct', -10.0)
+        if total_pnl <= max_daily_loss:
+            print(f"\n  !! DAILY LOSS LIMIT HIT: {total_pnl:.2f}% <= {max_daily_loss}%")
+            print(f"  !! No new entries allowed")
+            # 포지션 체크만 진행
+            if self.positions:
+                self.check_positions()
+            return
 
         # 1. 보유 포지션 체크
         if self.positions:
@@ -263,30 +341,59 @@ class ScalpingBot:
         if len(self.positions) < max_positions:
             print(f"\n  [Scanning for entries]")
 
-            for ticker, model_data in models.items():
-                if ticker in self.positions:
-                    continue  # 이미 보유 중
+            # 대상 모델 필터링
+            scan_models = models
+            if only_tickers:
+                scan_models = {k: v for k, v in models.items() if k in only_tickers}
 
+            for ticker, model_data in scan_models.items():
+                if ticker in self.positions:
+                    continue
+                if ticker in disabled:
+                    continue
                 if len(self.positions) >= max_positions:
                     break
+
+                # 강제 매수
+                if ticker in forced_buy:
+                    print(f"\n  FORCED BUY: {ticker}")
+                    if execute:
+                        order_result = self.api.order_buy(ticker, order_qty, price=0)
+                        if order_result:
+                            result = self.predict_entry(ticker, model_data)
+                            price = result['price'] if result else 0
+                            self.positions[ticker] = {
+                                'entry_price': price,
+                                'quantity': order_qty,
+                                'entry_time': datetime.now(),
+                                'tp': tp_override or model_data['params']['take_profit'],
+                                'sl': sl_override or model_data['params']['stop_loss']
+                            }
+                            print(f"    FORCED ORDER PLACED!")
+                    continue
 
                 result = self.predict_entry(ticker, model_data)
                 if result is None:
                     continue
 
-                if result['signal'] == 1 and result['buy_prob'] >= 0.55:
+                # TP/SL 오버라이드
+                if tp_override:
+                    result['tp'] = tp_override
+                if sl_override:
+                    result['sl'] = sl_override
+
+                if result['signal'] == 1 and result['buy_prob'] >= min_prob:
                     print(f"\n  BUY SIGNAL: {ticker}")
                     print(f"    Price: ${result['price']:.2f}")
                     print(f"    Probability: {result['buy_prob']*100:.1f}%")
                     print(f"    TP: +{result['tp']}%, SL: -{result['sl']}%")
 
                     if execute:
-                        # 매수 주문
-                        order_result = self.api.order_buy(ticker, 1, price=0)
+                        order_result = self.api.order_buy(ticker, order_qty, price=0)
                         if order_result:
                             self.positions[ticker] = {
                                 'entry_price': result['price'],
-                                'quantity': 1,
+                                'quantity': order_qty,
                                 'entry_time': datetime.now(),
                                 'tp': result['tp'],
                                 'sl': result['sl']
@@ -295,10 +402,9 @@ class ScalpingBot:
                         else:
                             print(f"    ORDER FAILED")
                     else:
-                        # 시뮬레이션
                         self.positions[ticker] = {
                             'entry_price': result['price'],
-                            'quantity': 1,
+                            'quantity': order_qty,
                             'entry_time': datetime.now(),
                             'tp': result['tp'],
                             'sl': result['sl']
@@ -312,20 +418,19 @@ class ScalpingBot:
     def run_continuous(self, models: dict, duration_minutes: int = 120,
                        interval_seconds: int = 60, execute: bool = False):
         """
-        연속 스캘핑 실행
-
-        Args:
-            models: 모델 딕셔너리
-            duration_minutes: 총 실행 시간 (분)
-            interval_seconds: 체크 간격 (초)
-            execute: 실제 주문 여부
+        연속 스캘핑 실행 (매 사이클마다 strategy.json 실시간 반영)
         """
+
+        config = load_strategy_config()
+        scalp_cfg = config.get('scalping', {})
+        interval_seconds = scalp_cfg.get('scan_interval_seconds', interval_seconds)
 
         print(f"\n{'='*70}")
         print(f"  CONTINUOUS SCALPING MODE")
         print(f"  Duration: {duration_minutes}min, Interval: {interval_seconds}s")
         print(f"  Execute: {'YES' if execute else 'NO (simulation)'}")
         print(f"  Models: {len(models)} stocks")
+        print(f"  Strategy: config/strategy.json (live reload every cycle)")
         print(f"{'='*70}")
 
         start_time = datetime.now()
@@ -335,13 +440,35 @@ class ScalpingBot:
         try:
             while datetime.now() < end_time:
                 cycle += 1
-                self.run_scalping_cycle(models, max_positions=5, execute=execute)
+
+                # 매 사이클마다 전략 설정 다시 로드 (실시간 반영)
+                live_config = load_strategy_config()
+                risk_cfg = live_config.get('risk', {})
+
+                # 긴급 정지 체크
+                if risk_cfg.get('stop_all_trading', False):
+                    print(f"\n  !! EMERGENCY STOP activated. Closing all positions...")
+                    for ticker in list(self.positions.keys()):
+                        try:
+                            stock = yf.Ticker(ticker)
+                            df = stock.history(period='1d', interval='1m')
+                            if not df.empty:
+                                self._close_position(ticker, df['Close'].iloc[-1], 'EMERGENCY')
+                        except Exception:
+                            pass
+                    self.positions.clear()
+                    break
+
+                live_interval = live_config.get('scalping', {}).get('scan_interval_seconds', interval_seconds)
+
+                self.run_scalping_cycle(models, execute=execute)
 
                 remaining = (end_time - datetime.now()).total_seconds() / 60
-                print(f"\n  Remaining: {remaining:.1f}min | Next scan in {interval_seconds}s...")
+                print(f"\n  Cycle #{cycle} | Remaining: {remaining:.1f}min | "
+                      f"Next in {live_interval}s...")
 
                 if datetime.now() < end_time:
-                    time.sleep(interval_seconds)
+                    time.sleep(live_interval)
 
         except KeyboardInterrupt:
             print("\n\n  STOPPED by user (Ctrl+C)")

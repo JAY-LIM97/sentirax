@@ -122,7 +122,8 @@ def run_scalping(continuous: bool = False):
         logger.info(f"Loaded {len(models)} models")
 
         if continuous:
-            bot.run_continuous(models, duration_minutes=120, interval_seconds=60, execute=True)
+            duration = int(os.environ.get('SCALPING_DURATION', '120'))
+            bot.run_continuous(models, duration_minutes=duration, interval_seconds=60, execute=True)
         else:
             bot.run_once(models, execute=True)
 

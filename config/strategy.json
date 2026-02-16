@@ -1,0 +1,34 @@
+{
+  "_comment": "이 파일을 GitHub 웹에서 수정하면 봇이 다음 스캔 때 실시간 반영합니다",
+  "_updated": "2026-02-16",
+
+  "swing": {
+    "enabled": true,
+    "max_positions": 14,
+    "min_probability": 0.55,
+    "order_quantity": 1,
+    "disabled_tickers": [],
+    "forced_buy_tickers": [],
+    "forced_sell_tickers": []
+  },
+
+  "scalping": {
+    "enabled": true,
+    "max_positions": 5,
+    "min_probability": 0.55,
+    "order_quantity": 1,
+    "scan_interval_seconds": 60,
+    "tp_override": null,
+    "sl_override": null,
+    "disabled_tickers": [],
+    "forced_buy_tickers": [],
+    "only_tickers": []
+  },
+
+  "risk": {
+    "max_daily_loss_pct": -10.0,
+    "max_total_positions": 20,
+    "stop_all_trading": false,
+    "paper_trading": true
+  }
+}
