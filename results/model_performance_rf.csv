@@ -1,0 +1,2 @@
+model,timestamp,train_size,test_size,test_accuracy,test_precision,test_recall,test_f1,train_accuracy
+Random Forest,2026-02-11 20:55:47,61,16,0.375,0.375,1.0,0.5454545454545454,1.0

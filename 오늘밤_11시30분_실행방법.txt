@@ -42,9 +42,9 @@ python scripts\auto_trading_bot.py
 실행되는 내용
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-✅ TOP 10 종목 자동 매매
-   - NVDA, INTC, TSLA, AMZN, AAPL
-   - NFLX, MSFT, AMD, MU, GOOGL
+✅ TOP 20 종목 중 14개 (500일 백테스팅 통과) 자동 매매
+   - NVDA, AAPL, GOOGL, MSFT, AMZN, META, TSLA
+   - AVGO, JPM, ABBV, HD, BAC, PG, CVX
 
 ✅ 각 종목별로:
    1. 최신 시장 데이터 수집
@@ -59,7 +59,7 @@ python scripts\auto_trading_bot.py
 예상 소요 시간
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-약 5~10분 (10개 종목 × 30초~1분)
+약 7~15분 (14개 종목 × 30초~1분)
 
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

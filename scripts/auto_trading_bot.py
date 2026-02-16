@@ -33,8 +33,9 @@ from datetime import datetime, timedelta
 from core.feature_engineer import FeatureEngineer
 from core.kis_trading_api import KISTradingAPI
 
-# TOP 10 종목
-TOP10_TICKERS = ['NVDA', 'INTC', 'TSLA', 'AMZN', 'AAPL', 'NFLX', 'MSFT', 'AMD', 'MU', 'GOOGL']
+# TOP 20 종목 중 모델 저장된 14개 (500일 백테스팅 통과)
+TOP20_TICKERS = ['NVDA', 'AAPL', 'GOOGL', 'MSFT', 'AMZN', 'META', 'TSLA', 'AVGO',
+                 'JPM', 'ABBV', 'HD', 'BAC', 'PG', 'CVX']
 
 
 class AutoTradingBot:
@@ -82,7 +83,7 @@ class AutoTradingBot:
         Returns:
             모델 데이터
         """
-        model_path = os.path.join(self.models_dir, f'{ticker.lower()}_top10_logistic.pkl')
+        model_path = os.path.join(self.models_dir, f'{ticker.lower()}_top20_500d.pkl')
 
         if not os.path.exists(model_path):
             print(f"⚠️  {ticker} 모델 파일 없음")
@@ -289,7 +290,7 @@ class AutoTradingBot:
             execute: True면 실제 주문 실행
         """
         if tickers is None:
-            tickers = TOP10_TICKERS
+            tickers = TOP20_TICKERS
 
         print("\n\n" + "=" * 70)
         print("🚀 자동매매 봇 실행")
@@ -354,24 +355,23 @@ def main():
     """메인 함수"""
 
     print("\n" + "=" * 70)
-    print("⚠️  Sentirax 자동매매 봇 - 실제 매매 모드")
+    print("Sentirax v2.0 - TOP 20 500-day Model Trading Bot")
     print("=" * 70)
-    print("\n🚨 주의사항:")
-    print("  1. 모의투자 계좌로 실행됩니다")
-    print("  2. TOP 10 종목에 대해 시장가 주문을 실행합니다")
-    print("  3. 각 종목당 1주씩 매수/매도합니다")
-    print("  4. 미국 시장 개장 시간에만 주문이 체결됩니다")
-    print("  5. 종목: NVDA, INTC, TSLA, AMZN, AAPL, NFLX, MSFT, AMD, MU, GOOGL")
+    print("\n  Mode: Paper Trading (Mock)")
+    print(f"  Tickers: {len(TOP20_TICKERS)} stocks (500-day backtested)")
+    print(f"  Stocks: {', '.join(TOP20_TICKERS)}")
+    print("  Order: Market price, 1 share each")
+    print("  Note: Orders execute only during US market hours")
     print()
 
     # 사용자 확인
-    confirm = input("정말 실행하시겠습니까? (yes/no): ").strip().lower()
+    confirm = input("Execute? (yes/no): ").strip().lower()
 
     if confirm != 'yes':
-        print("\n❌ 실행 취소됨")
+        print("\nCancelled.")
         return
 
-    print("\n✅ 실행을 시작합니다...\n")
+    print("\nStarting...\n")
 
     # 봇 초기화 (모의투자)
     bot = AutoTradingBot(
@@ -380,7 +380,7 @@ def main():
     )
 
     # 실제 매매 실행
-    bot.run_once(tickers=TOP10_TICKERS, execute=True)
+    bot.run_once(tickers=TOP20_TICKERS, execute=True)
 
     # 결과 로그 저장
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

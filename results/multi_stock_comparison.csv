@@ -1,0 +1,5 @@
+ticker,success,train_accuracy,test_accuracy,test_precision,test_recall,test_f1,overfit_gap,ml_return,bh_return,excess_return,num_trades,win_rate,model_path
+TSLA,True,0.9069767441860465,0.45454545454545453,0.5,0.3333333333333333,0.4,0.4524312896405919,59.19702106621387,-5.294226680388636,64.49124774660251,15,73.33333333333333,c:\Project_Sentirax\sentirax\scripts\..\models\tsla_logistic_regression.pkl
+NVDA,True,0.8974358974358975,0.5,0.6666666666666666,0.3333333333333333,0.4444444444444444,0.39743589743589747,48.822017959541135,3.5081755424748895,45.31384241706625,16,81.25,c:\Project_Sentirax\sentirax\scripts\..\models\nvda_logistic_regression.pkl
+AAPL,True,1.0,0.75,0.75,1.0,0.8571428571428571,0.25,24.43936718416915,5.632814216227011,18.80655296794214,5,80.0,c:\Project_Sentirax\sentirax\scripts\..\models\aapl_logistic_regression.pkl
+MSFT,True,0.8387096774193549,0.5,0.0,0.0,0.0,0.33870967741935487,14.251751383660793,-20.46191072818475,34.713662111845544,13,61.53846153846154,c:\Project_Sentirax\sentirax\scripts\..\models\msft_logistic_regression.pkl

@@ -1,0 +1,2 @@
+model,initial_capital,final_capital,ml_return,buy_hold_return,excess_return,num_trades,win_rate,avg_profit
+Logistic Regression,10000,14907.723659650175,49.07723659650175,1.6718138113039342,47.405422785197814,15,68.75,2.581227977151137

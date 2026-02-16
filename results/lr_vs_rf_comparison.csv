@@ -1,0 +1,7 @@
+지표,로지스틱 회귀,Random Forest
+Train Accuracy,95.08%,88.52%
+Test Accuracy,87.50%,50.00%
+Test Precision,83.33%,42.86%
+Test Recall,83.33%,100.00%
+Test F1-Score,0.833,0.600
+Overfit Gap,7.6%p,38.5%p

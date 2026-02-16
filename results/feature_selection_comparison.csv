@@ -1,0 +1,8 @@
+지표,전체 특징 (26개),선택된 특징 (10개)
+특징 수,26,10
+Train Accuracy,88.52%,93.44%
+Test Accuracy,50.00%,37.50%
+Test Precision,42.86%,37.50%
+Test Recall,100.00%,100.00%
+Test F1-Score,0.600,0.545
+Overfit Gap,38.5%p,55.9%p

@@ -9,7 +9,7 @@ echo.
 echo Current Time: %date% %time%
 echo.
 echo WARNING: Paper Trading Mode
-echo WARNING: Real orders will be executed for TOP 10 stocks
+echo WARNING: Real orders will be executed for TOP 20 stocks (14 qualified)
 echo.
 echo Press any key to continue...
 pause > nul

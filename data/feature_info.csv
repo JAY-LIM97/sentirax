@@ -1,0 +1,25 @@
+category,name,description,formula
+가격,return_1d,1일 수익률,(오늘-어제)/어제×100
+가격,return_5d,5일 수익률,(오늘-5일전)/5일전×100
+가격,return_20d,20일 수익률,(오늘-20일전)/20일전×100
+가격,ma_5,5일 이동평균,mean(Close[-5:])
+가격,ma_20,20일 이동평균,mean(Close[-20:])
+가격,ma_50,50일 이동평균,mean(Close[-50:])
+가격,ma_cross_5_20,골든/데드크로스 (5-20),1 if MA5>MA20 else 0
+가격,ma_cross_20_50,골든/데드크로스 (20-50),1 if MA20>MA50 else 0
+거래량,volume_ma_5,5일 평균 거래량,mean(Volume[-5:])
+거래량,volume_ma_20,20일 평균 거래량,mean(Volume[-20:])
+거래량,volume_change,거래량 변화율,(오늘-어제)/어제×100
+거래량,volume_ratio,거래량 비율,Volume/MA_Volume
+변동성,volatility_5d,5일 변동성,std(returns[-5:])
+변동성,volatility_20d,20일 변동성,std(returns[-20:])
+모멘텀,rsi,상대강도지수,100-100/(1+RS)
+거시경제,vix,시장 공포 지수,VIX 절대값
+거시경제,vix_change,VIX 변화율,(오늘-어제)/어제×100
+거시경제,treasury_10y,10년 국채 수익률,절대값
+거시경제,oil,유가,WTI 가격
+거시경제,nasdaq_change,나스닥 변화율,(오늘-어제)/어제×100
+거시경제,sp500_change,S&P500 변화율,(오늘-어제)/어제×100
+시차,return_1d_lag1,어제의 1일 수익률,return_1d.shift(1)
+시차,return_1d_lag2,그제의 1일 수익률,return_1d.shift(2)
+시차,vix_lag1,어제의 VIX,vix.shift(1)
