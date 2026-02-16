@@ -151,24 +151,21 @@ class FeatureEngineer:
         # - 절대값보다 변화가 중요 (VIX 20→25는 큰 이벤트)
         # - 모델이 상대적 변화를 학습하기 쉬움
 
-        # 원본 데이터의 변화율 컬럼이 비어있으면 직접 계산
-        if df['vix_change'].isna().all():
-            df['vix_change'] = df['vix'].pct_change() * 100
+        # 원본 데이터의 변화율 컬럼이 없거나 비어있으면 직접 계산
+        change_pairs = {
+            'vix_change': 'vix',
+            'treasury_10y_change': 'treasury_10y',
+            'oil_change': 'oil',
+            'nasdaq_change': 'nasdaq',
+            'sp500_change': 'sp500',
+            'dxy_change': 'dxy',
+        }
 
-        if df['treasury_10y_change'].isna().all():
-            df['treasury_10y_change'] = df['treasury_10y'].pct_change() * 100
-
-        if df['oil_change'].isna().all():
-            df['oil_change'] = df['oil'].pct_change() * 100
-
-        if df['nasdaq_change'].isna().all():
-            df['nasdaq_change'] = df['nasdaq'].pct_change() * 100
-
-        if df['sp500_change'].isna().all():
-            df['sp500_change'] = df['sp500'].pct_change() * 100
-
-        if 'dxy_change' in df.columns and df['dxy_change'].isna().all():
-            df['dxy_change'] = df['dxy'].pct_change() * 100
+        for change_col, source_col in change_pairs.items():
+            if source_col not in df.columns:
+                continue
+            if change_col not in df.columns or df[change_col].isna().all():
+                df[change_col] = df[source_col].pct_change() * 100
 
         # ========================================
         # F. 시차 특징 (Lag Features)

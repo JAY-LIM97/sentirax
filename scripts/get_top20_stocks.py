@@ -15,10 +15,12 @@ S&P 500 + 나스닥 100에서 상위 20개 종목 선정
 import sys
 import os
 import io
+import platform
 
 # Windows 한글/이모지 출력 설정
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+if platform.system() == 'Windows':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 import yfinance as yf
 import pandas as pd

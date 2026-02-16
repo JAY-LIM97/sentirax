@@ -321,6 +321,13 @@ class SwingModelRetrainer:
             df['volume_trend'] = (df['volume_ma_5'] / df['volume_ma_20']).fillna(1)
             df['next_day_return'] = df['Close'].pct_change().shift(-1) * 100
 
+            # 변화율 컬럼 초기화 (feature_engineer.py에서 계산)
+            df['vix_change'] = None
+            df['treasury_10y_change'] = None
+            df['oil_change'] = None
+            df['nasdaq_change'] = None
+            df['sp500_change'] = None
+
             df = df.dropna(subset=['ma_50'])
 
             return df

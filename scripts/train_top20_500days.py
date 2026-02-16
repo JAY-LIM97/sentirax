@@ -10,9 +10,11 @@ TOP 20 종목 500일 데이터 모델 학습 및 백테스팅
 import sys
 import os
 import io
+import platform
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
+if platform.system() == 'Windows':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
