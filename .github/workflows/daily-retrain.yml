@@ -48,10 +48,26 @@ jobs:
           git diff --staged --quiet || git commit -m "auto: daily model retrain $(date +%Y-%m-%d)"
           git push || true
 
+      - name: Job Summary
+        if: always()
+        run: |
+          echo "### Daily Retrain Results" >> $GITHUB_STEP_SUMMARY
+          if [ -f results/daily_reports/report_$(date +%Y%m%d).json ]; then
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat results/daily_reports/report_$(date +%Y%m%d).json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Committed files:**" >> $GITHUB_STEP_SUMMARY
+          git log --oneline -1 >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "No new commits" >> $GITHUB_STEP_SUMMARY
+
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: retrain-logs-${{ github.run_number }}
-          path: logs/
+          path: |
+            logs/
+            results/daily_reports/
+            results/performance/
           retention-days: 14

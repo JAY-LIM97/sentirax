@@ -144,6 +144,11 @@ class ScalpingBot:
         # 포지션 추적
         self.positions = {}  # {ticker: {entry_price, quantity, entry_time, tp, sl}}
         self.trade_log = []
+        self.results_dir = os.path.join(os.path.dirname(__file__), '..', 'results')
+        os.makedirs(self.results_dir, exist_ok=True)
+
+        # 체크포인트에서 포지션 복원 시도
+        self._load_checkpoint()
 
         print("  Bot initialized!")
 
@@ -168,18 +173,115 @@ class ScalpingBot:
 
         return models
 
-    def get_latest_1min_data(self, ticker: str) -> pd.DataFrame:
-        """최신 1분봉 데이터 수집"""
+    def get_latest_1min_data(self, ticker: str, max_retries: int = 3) -> pd.DataFrame:
+        """최신 1분봉 데이터 수집 (재시도 포함)"""
+        for attempt in range(max_retries):
+            try:
+                stock = yf.Ticker(ticker)
+                df = stock.history(period='1d', interval='1m')
+                if df.empty:
+                    df = stock.history(period='2d', interval='1m')
+                return df
+            except Exception as e:
+                if attempt < max_retries - 1:
+                    time.sleep(2)
+                else:
+                    print(f"  Data error {ticker} (after {max_retries} retries): {e}")
+                    return None
+
+    def _save_checkpoint(self):
+        """현재 포지션 + 거래 기록 체크포인트 저장"""
+        checkpoint = {
+            'timestamp': datetime.now().isoformat(),
+            'positions': {},
+            'trade_log': []
+        }
+        for ticker, pos in self.positions.items():
+            checkpoint['positions'][ticker] = {
+                'entry_price': pos['entry_price'],
+                'quantity': pos['quantity'],
+                'entry_time': pos['entry_time'].isoformat(),
+                'tp': pos['tp'],
+                'sl': pos['sl']
+            }
+        for trade in self.trade_log:
+            checkpoint['trade_log'].append({
+                'ticker': trade['ticker'],
+                'entry_price': trade['entry_price'],
+                'exit_price': trade['exit_price'],
+                'pnl_pct': trade['pnl_pct'],
+                'reason': trade['reason'],
+                'entry_time': trade['entry_time'].isoformat(),
+                'exit_time': trade['exit_time'].isoformat()
+            })
+        path = os.path.join(self.results_dir, 'scalping_checkpoint.json')
+        with open(path, 'w') as f:
+            json.dump(checkpoint, f, indent=2)
+
+    def _load_checkpoint(self):
+        """이전 체크포인트에서 포지션 복원"""
+        path = os.path.join(self.results_dir, 'scalping_checkpoint.json')
+        if not os.path.exists(path):
+            return
         try:
-            stock = yf.Ticker(ticker)
-            df = stock.history(period='1d', interval='1m')
-            if df.empty:
-                # fallback to 2d
-                df = stock.history(period='2d', interval='1m')
-            return df
+            with open(path) as f:
+                checkpoint = json.load(f)
+            # 4시간 이내 체크포인트만 복원 (오래된 건 무시)
+            ts = datetime.fromisoformat(checkpoint['timestamp'])
+            if (datetime.now() - ts).total_seconds() > 4 * 3600:
+                print("  Checkpoint too old, skipping restore")
+                return
+            for ticker, pos in checkpoint.get('positions', {}).items():
+                self.positions[ticker] = {
+                    'entry_price': pos['entry_price'],
+                    'quantity': pos['quantity'],
+                    'entry_time': datetime.fromisoformat(pos['entry_time']),
+                    'tp': pos['tp'],
+                    'sl': pos['sl']
+                }
+            for trade in checkpoint.get('trade_log', []):
+                self.trade_log.append({
+                    'ticker': trade['ticker'],
+                    'entry_price': trade['entry_price'],
+                    'exit_price': trade['exit_price'],
+                    'pnl_pct': trade['pnl_pct'],
+                    'reason': trade['reason'],
+                    'entry_time': datetime.fromisoformat(trade['entry_time']),
+                    'exit_time': datetime.fromisoformat(trade['exit_time'])
+                })
+            if self.positions:
+                print(f"  Restored {len(self.positions)} positions from checkpoint")
+            if self.trade_log:
+                print(f"  Restored {len(self.trade_log)} trade records from checkpoint")
         except Exception as e:
-            print(f"  Data error {ticker}: {e}")
-            return None
+            print(f"  Checkpoint load error: {e}")
+
+    def _save_daily_summary(self):
+        """일일 스캘핑 요약 저장"""
+        today_str = datetime.now().strftime('%Y%m%d')
+        summary = {
+            'date': datetime.now().strftime('%Y-%m-%d'),
+            'total_trades': len(self.trade_log),
+            'open_positions': len(self.positions),
+            'trades': []
+        }
+        if self.trade_log:
+            total_pnl = sum(t['pnl_pct'] for t in self.trade_log)
+            wins = sum(1 for t in self.trade_log if t['pnl_pct'] > 0)
+            summary['total_pnl_pct'] = round(total_pnl, 2)
+            summary['win_count'] = wins
+            summary['loss_count'] = len(self.trade_log) - wins
+            summary['win_rate'] = round(wins / len(self.trade_log) * 100, 1)
+            for t in self.trade_log:
+                summary['trades'].append({
+                    'ticker': t['ticker'],
+                    'pnl_pct': round(t['pnl_pct'], 2),
+                    'reason': t['reason']
+                })
+        path = os.path.join(self.results_dir, f'scalping_summary_{today_str}.json')
+        with open(path, 'w') as f:
+            json.dump(summary, f, indent=2)
+        print(f"\n  Daily summary saved: {path}")
 
     def predict_entry(self, ticker: str, model_data: dict) -> dict:
         """매수 진입 신호 예측"""
@@ -465,6 +567,9 @@ class ScalpingBot:
 
                 self.run_scalping_cycle(models, execute=execute)
 
+                # 매 사이클마다 체크포인트 저장
+                self._save_checkpoint()
+
                 remaining = (end_time - datetime.now()).total_seconds() / 60
                 print(f"\n  Cycle #{cycle} | Remaining: {remaining:.1f}min | "
                       f"Next in {live_interval}s...")
@@ -475,8 +580,10 @@ class ScalpingBot:
         except KeyboardInterrupt:
             print("\n\n  STOPPED by user (Ctrl+C)")
 
-        # 최종 요약
+        # 최종 요약 + 일일 리포트 저장
         self._print_summary()
+        self._save_checkpoint()
+        self._save_daily_summary()
 
     def run_once(self, models: dict, execute: bool = False):
         """1회 실행 (모든 종목 스캔 후 매수/매도)"""

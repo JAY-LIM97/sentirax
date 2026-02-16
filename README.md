@@ -1,252 +1,212 @@
-# 🚀 Sentirax
+# Sentirax
 
-AI-powered stock trading system with advanced backtesting
-
----
-
-## 📊 Project Overview
-
-Sentirax는 AI 기반 주식 매매 시스템으로, 거시경제 지표와 기술적 분석을 결합하여 최적의 매매 타이밍을 포착합니다.
-
-### ✨ 핵심 기능
-
-- **📊 거시경제 지표 분석**: VIX, 국채수익률, 유가, 나스닥/S&P500
-- **📈 기술적 지표**: RSI, 이동평균선, 거래량 분석
-- **🤖 다중 LLM 지원**: Gemini, Claude, Groq
-- **🎯 백테스팅 시스템**: 90일 이상 데이터 기반 성과 검증
-- **📄 자동 리포트**: PDF 백테스팅 리포트 생성
+AI-powered US stock trading system with ML models, automated execution, and cloud deployment.
 
 ---
 
-## 🏆 검증된 성과
+## Overview
 
-### 90일 백테스팅 결과 (TSLA, 2025-10-31 ~ 2026-02-06)전략           수익률     거래    승률
-─────────────────────────────────
-Volume        +0.82%     2회     50%
-Buy & Hold    -9.95%     1회     0%
-─────────────────────────────────
-초과 수익:    +10.77%
-
-**핵심 발견:**
-- 거래량 기반 전략이 하락장에서 10.77% 초과 수익 달성
-- 거래량이 주가 예측에 가장 강력한 지표 (상관관계 +0.245)
-- Profit Factor: 1.65 (수익이 손실의 1.65배)
+Sentirax는 머신러닝 기반 미국 주식 자동매매 시스템입니다.
+- **Swing Trading**: TOP 20 대형주 대상, 500일 백테스팅 기반 LogisticRegression 모델
+- **Scalping**: 일별 급등주 TOP 20 대상, 1분봉 GradientBoosting 모델
+- **GitHub Actions**: 매일 자동 실행 (KST 22:00~06:30), 휴장일 자동 스킵
 
 ---
 
-## 🏗️ 프로젝트 구조sentirax/
-├── 📁 core/                    # 핵심 모듈
-│   ├── config.py              # 설정 관리
-│   ├── news_collector.py      # 뉴스 수집
-│   ├── sentiment_analyzer.py  # AI 감성 분석
-│   ├── macro_collector.py     # 거시경제 지표
-│   └── evaluator.py           # 백테스팅 엔진
+## Architecture
+
+```
+sentirax/
+├── core/                        # 핵심 모듈
+│   ├── kis_trading_api.py       # 한국투자증권 해외주식 API
+│   ├── feature_engineer.py      # ML Feature Engineering (20+ 지표)
+│   └── model_manager.py         # 모델 재학습 + 성과 추적 + 자동 교체
 │
-├── 📁 collectors/             # 데이터 수집
-│   └── optimized_collector.py # 통합 수집기
+├── scripts/                     # 실행 스크립트
+│   ├── auto_trading_bot.py      # Swing 자동매매 봇
+│   ├── scalping_bot.py          # Scalping 자동매매 봇
+│   ├── get_surging_stocks.py    # 급등주 TOP 20 스캔
+│   ├── train_scalping_model.py  # Scalping 모델 학습
+│   └── train_top20_500days.py   # Swing 모델 학습 (500일)
 │
-├── 📁 scripts/                # 실행 스크립트
-│   ├── main.py               # 실시간 분석
-│   ├── collect_90days.py     # 90일 데이터 수집
-│   ├── backtest_all.py       # 백테스팅 실행
-│   ├── report_generator.py   # PDF 리포트 생성
-│   └── visualizer.py         # 차트 생성
+├── cloud/                       # 클라우드 실행
+│   ├── run_cloud.py             # GitHub Actions 헤드리스 실행기
+│   └── requirements-cloud.txt   # 클라우드 의존성
 │
-├── 📁 data/                   # 데이터 저장소
-├── 📁 results/                # 결과물 (차트, 리포트)
-├── 📁 docs/                   # 문서
-│   ├── CHANGELOG.md
-│   └── DEVELOPMENT.md
+├── config/
+│   └── strategy.json            # 실시간 전략 설정 (GitHub 웹에서 수정 가능)
 │
-├── .env                       # API 키 (비공개)
-├── .gitignore
-├── LICENSE                    # MIT License
-├── README.md
-└── requirements.txt
+├── models/                      # 학습된 ML 모델 (.pkl)
+├── results/                     # 거래 결과 + 리포트
+│
+├── .github/workflows/           # GitHub Actions 자동화
+│   ├── swing-trading.yml        # 스윙 트레이딩 (KST 23:30)
+│   ├── scalping-bot.yml         # 스캘핑 (KST 23:35~06:30, 2 Phase)
+│   └── daily-retrain.yml        # 일일 모델 재학습 (KST 22:00)
+│
+├── .env                         # API 키 (비공개)
+└── RUN_ALL.bat                  # 로컬 실행용 (Swing + Scalping)
+```
 
 ---
 
-## 🚀 Quick Start
+## Trading Models
 
-### 1. 설치
-```bash저장소 클론
+### Swing Trading (일간)
+- **대상**: NVDA, AAPL, GOOGL, MSFT, AMZN, META, TSLA, AVGO 등 14종목
+- **데이터**: 500일 일봉 + 거시경제 지표 (VIX, 국채, 유가, 나스닥, S&P500)
+- **모델**: LogisticRegression + StandardScaler
+- **Features**: RSI, MA(5/20/50), 변동성, 거래량 비율, 거시경제 변화율 등 20+개
+- **레이블**: 다음날 +1% 이상 = 매수(1), -1% 이하 = 매도(0)
+
+### Scalping (분간)
+- **대상**: 당일 급등주 TOP 20 (100개 종목 스캔)
+- **데이터**: 5일 1분봉 캔들
+- **모델**: GradientBoostingClassifier
+- **TP/SL**: 변동성 기반 동적 조정 (TP max 5%, SL max 3%)
+- **보유 시간**: 최대 60분
+- **품질 필터**: 정확도 >= 50% AND 승률 >= 40% 인 모델만 저장
+
+---
+
+## Daily Execution Flow (GitHub Actions)
+
+```
+KST 22:00  [daily-retrain.yml]
+           ├─ Performance tracking (전일 거래 성과)
+           ├─ Model auto-switch (성과 < 25점 → 비활성화)
+           ├─ Retrain 20 swing models (최신 데이터)
+           └─ Git commit updated models
+
+KST 23:30  [swing-trading.yml]
+           └─ Swing trading (14종목 매수/매도)
+
+KST 23:35  [scalping-bot.yml]
+           ├─ Phase 1 (3.5hr):
+           │  ├─ Surging stocks scan (100종목 → TOP 20)
+           │  ├─ Train scalping models
+           │  └─ Continuous scalping (210분)
+           │
+           └─ Phase 2 (3.5hr):
+              └─ Continuous scalping (210분, 체크포인트 이어받기)
+
+* 미국 휴장일 자동 스킵 (NYSE 2025-2026 캘린더 내장)
+```
+
+---
+
+## Live Strategy Control
+
+`config/strategy.json`을 GitHub 웹에서 수정하면 다음 사이클부터 즉시 반영됩니다.
+
+```json
+{
+  "swing": {
+    "enabled": true,
+    "max_positions": 14,
+    "min_probability": 0.55,
+    "order_quantity": 1,
+    "disabled_tickers": [],
+    "forced_buy_tickers": [],
+    "forced_sell_tickers": []
+  },
+  "scalping": {
+    "enabled": true,
+    "max_positions": 5,
+    "min_probability": 0.55,
+    "scan_interval_seconds": 60,
+    "tp_override": null,
+    "sl_override": null,
+    "only_tickers": []
+  },
+  "risk": {
+    "max_daily_loss_pct": -10.0,
+    "stop_all_trading": false,
+    "paper_trading": true
+  }
+}
+```
+
+**주요 제어:**
+- `stop_all_trading: true` → 긴급 정지 (모든 포지션 청산)
+- `disabled_tickers` → 특정 종목 제외
+- `forced_buy_tickers` → 강제 매수
+- `tp_override / sl_override` → TP/SL 수동 오버라이드
+
+---
+
+## Monitoring
+
+### GitHub Actions UI
+- **Job Summary**: 각 워크플로우 실행 결과가 Actions 탭에 표시
+- **Artifacts**: `logs/` + `results/` 파일 다운로드 (7~14일 보관)
+
+### Results Files
+```
+results/
+├── daily_reports/report_YYYYMMDD.json    # 일일 실행 요약
+├── scalping_summary_YYYYMMDD.json        # 스캘핑 거래 내역
+├── scalping_checkpoint.json              # 포지션 체크포인트
+├── performance/
+│   ├── trade_history.csv                 # 전체 거래 기록
+│   ├── daily_summary.csv                 # 일일 P&L
+│   └── model_scores.json                 # 모델 점수 (0-100)
+└── surging_stocks_today.csv              # 오늘의 급등주
+```
+
+---
+
+## Setup
+
+### 1. 의존성 설치
+```bash
 git clone https://github.com/JAY-LIM97/sentirax.git
-cd sentirax가상환경 생성
-python -m venv venv
-.\venv\Scripts\Activate.ps1  # Windows
-source venv/bin/activate      # Mac/Linux패키지 설치
+cd sentirax
 pip install -r requirements.txt
+```
 
-### 2. 환경 설정
-
+### 2. 환경변수 설정
 `.env` 파일 생성:
-```envNews API
-NEWSAPI_KEY=your_newsapi_keyAI Models
-GEMINI_API_KEY=your_gemini_key
-ANTHROPIC_API_KEY=your_claude_key
-GROQ_API_KEY=your_groq_keyLLM Provider (gemini/claude/groq)
-LLM_PROVIDER=gemini
+```env
+HT_API_KEY=한국투자증권_앱키
+HT_API_SECRET_KEY=한국투자증권_시크릿키
+HT_API_FK_KEY=모의투자_앱키
+HT_API_FK_SECRET_KEY=모의투자_시크릿키
+```
 
-### 3. 실행
-```bashcd scripts실시간 분석
-python main.py90일 데이터 수집
-python collect_90days.py백테스팅
-python backtest_all.py리포트 생성
-python report_generator.py차트 생성
-python visualizer.py
+### 3. GitHub Actions 설정
+1. Repository를 **public**으로 설정
+2. Settings > Secrets에 위 4개 키 등록
+3. Actions 탭에서 워크플로우 활성화
 
----
+### 4. 로컬 실행
+```bash
+# Swing + Scalping 동시 실행 (Windows)
+RUN_ALL.bat
 
-## 📊 지원 기능
-
-### 데이터 수집
-- **뉴스**: NewsAPI (최근 30일)
-- **거시경제**: yfinance (VIX, 국채, 유가 등)
-- **기술지표**: RSI, MA, 볼린저밴드, 거래량
-
-### 분석 전략
-1. **감성 기반**: AI 뉴스 감성 분석
-2. **거래량 기반**: 거래량 급증/감소 패턴
-3. **복합 신호**: 다중 지표 결합
-
-### 백테스팅
-- 90일 이상 데이터 지원
-- 손절/익절 전략
-- 승률, Profit Factor, 최대낙폭 계산
-- Buy & Hold 대비 성과 비교
+# 개별 실행
+python cloud/run_cloud.py --swing
+python cloud/run_cloud.py --scalping-continuous
+python cloud/run_cloud.py --retrain
+python cloud/run_cloud.py --dashboard
+```
 
 ---
 
-## 🎯 거래 전략
+## Tech Stack
 
-### Volume Strategy (권장)
-```python매수 조건:
-
-거래량 1.3배 이상 급증
-VIX < 25 (안정적 시장)
-매도 조건:
-
-거래량 0.9배 이하 감소
-또는 손절 -10%
-또는 익절 +20%
-
-
-**성과:** Buy & Hold 대비 +10.77% 초과 수익 (90일)
+- **ML**: scikit-learn (LogisticRegression, GradientBoosting)
+- **Data**: yfinance (주가 + 거시경제)
+- **Trading API**: 한국투자증권 Open API (해외주식)
+- **Cloud**: GitHub Actions (무료, 월~금 자동 실행)
+- **Language**: Python 3.11+
 
 ---
 
-## 📈 사용 예시
+## License
 
-### 실시간 분석
-```pythonfrom core.news_collector import NewsCollector
-from core.sentiment_analyzer import SentimentAnalyzer뉴스 수집
-collector = NewsCollector()
-news = collector.get_stock_news("TSLA", "Tesla", limit=20)AI 감성 분석
-analyzer = SentimentAnalyzer()
-result = analyzer.analyze_news_sentiment_batch(news_text, "TSLA", 20)print(f"감성 점수: {result['overall_score']}")
-print(f"추천: {result['recommendation']}")
+MIT License
 
-### 백테스팅
-```pythonfrom core.evaluator import BacktestEvaluator
-import pandas as pd데이터 로드
-df = pd.read_csv('data/tsla_optimized_90days.csv', index_col=0)평가
-evaluator = BacktestEvaluator(df)
-evaluator.compare_all_strategies(initial_capital=10000)
+## Developer
 
----
-
-## ⚙️ 설정
-
-`core/config.py`:
-```python뉴스 수집
-NEWS_DAYS_BACK = 7
-NEWS_LIMIT = 20거래 전략
-BULLISH_THRESHOLD = 0.3
-BEARISH_THRESHOLD = -0.3LLM 설정
-LLM_PROVIDER = 'gemini'
-
----
-
-## 📊 백테스팅 지표
-
-- **Total Return**: 총 수익률
-- **Excess Return**: Buy & Hold 대비 초과 수익
-- **Win Rate**: 승률
-- **Profit Factor**: 평균 수익 / 평균 손실
-- **Max Drawdown**: 최대 낙폭
-- **Sharpe Ratio**: 위험 조정 수익률
-
----
-
-## 🔮 로드맵
-
-### Phase 1: 핵심 시스템 ✅ (완료)
-- [x] AI 감성 분석
-- [x] 거시경제 지표 수집
-- [x] 백테스팅 엔진
-- [x] PDF 리포트 생성
-
-### Phase 2: 전략 고도화 🔄 (진행 중)
-- [ ] 정교한 매매 전략 (손절/익절)
-- [ ] 포지션 사이징
-- [ ] 리스크 관리
-
-### Phase 3: 실전 배포 ⏳ (예정)
-- [ ] 실시간 모니터링
-- [ ] 텔레그램 알림
-- [ ] 웹 대시보드
-- [ ] 자동 매매 연동
-
-### Phase 4: 확장 🌟 (미래)
-- [ ] 다중 종목 분석
-- [ ] 포트폴리오 최적화
-- [ ] 소셜 감성 분석 (Reddit, Twitter)
-- [ ] 머신러닝 모델
-
----
-
-## 🛠️ 기술 스택
-
-- **Language**: Python 3.14+
-- **AI Models**: Google Gemini, Anthropic Claude, Groq
-- **Data**: NewsAPI, yfinance
-- **Analysis**: pandas, numpy, matplotlib, seaborn
-- **Reporting**: FPDF
-
----
-
-## 📄 라이선스
-
-MIT License - 자세한 내용은 [LICENSE](LICENSE) 파일 참고
-
----
-
-## 👨‍💻 개발자
-
-**임재현 (JAY LIM)**
-- GitHub: [@JAY-LIM97](https://github.com/JAY-LIM97)
-- Project: Sentirax - AI Stock Trading System
-
----
-
-## 🙏 기여
-
-이슈 및 PR 환영합니다!
-
-1. Fork the Project
-2. Create your Feature Branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your Changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the Branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
-
----
-
----
-
-## 📞 문의
-
-프로젝트 관련 문의사항은 GitHub Issues를 이용해주세요.
-
----
-
-**⭐ Star this repo if you find it useful!**
+**임재현 (JAY LIM)** - [@JAY-LIM97](https://github.com/JAY-LIM97)

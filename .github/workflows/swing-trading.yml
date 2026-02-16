@@ -32,10 +32,22 @@ jobs:
           HT_API_FK_SECRET_KEY: ${{ secrets.HT_API_FK_SECRET_KEY }}
         run: python cloud/run_cloud.py --swing
 
+      - name: Job Summary
+        if: always()
+        run: |
+          if [ -f results/daily_reports/report_$(date +%Y%m%d).json ]; then
+            echo "### Swing Trading Results" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat results/daily_reports/report_$(date +%Y%m%d).json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: swing-logs-${{ github.run_number }}
-          path: logs/
+          path: |
+            logs/
+            results/daily_reports/
           retention-days: 7

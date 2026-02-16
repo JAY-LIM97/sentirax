@@ -15,9 +15,10 @@ Usage:
 import sys
 import os
 import io
+import json
 import argparse
 import logging
-from datetime import datetime
+from datetime import datetime, date
 
 # 프로젝트 루트
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -44,6 +45,103 @@ logging.basicConfig(
     ]
 )
 logger = logging.getLogger('sentirax')
+
+
+def is_us_market_holiday(check_date: date = None) -> bool:
+    """미국 증시 휴장일 체크 (NYSE/NASDAQ)"""
+    if check_date is None:
+        check_date = date.today()
+
+    # 2025-2026 NYSE 휴장일 (고정)
+    holidays = {
+        # 2025
+        date(2025, 1, 1),    # New Year's Day
+        date(2025, 1, 20),   # MLK Day
+        date(2025, 2, 17),   # Presidents' Day
+        date(2025, 4, 18),   # Good Friday
+        date(2025, 5, 26),   # Memorial Day
+        date(2025, 6, 19),   # Juneteenth
+        date(2025, 7, 4),    # Independence Day
+        date(2025, 9, 1),    # Labor Day
+        date(2025, 11, 27),  # Thanksgiving
+        date(2025, 12, 25),  # Christmas
+        # 2026
+        date(2026, 1, 1),    # New Year's Day
+        date(2026, 1, 19),   # MLK Day
+        date(2026, 2, 16),   # Presidents' Day
+        date(2026, 4, 3),    # Good Friday
+        date(2026, 5, 25),   # Memorial Day
+        date(2026, 6, 19),   # Juneteenth
+        date(2026, 7, 3),    # Independence Day (observed)
+        date(2026, 9, 7),    # Labor Day
+        date(2026, 11, 26),  # Thanksgiving
+        date(2026, 12, 25),  # Christmas
+    }
+
+    return check_date in holidays
+
+
+def save_daily_report(results: dict, mode: str):
+    """일일 거래 요약 리포트 저장"""
+    report_dir = os.path.join(PROJECT_ROOT, 'results', 'daily_reports')
+    os.makedirs(report_dir, exist_ok=True)
+
+    today_str = datetime.now().strftime('%Y%m%d')
+    report_path = os.path.join(report_dir, f'report_{today_str}.json')
+
+    report = {
+        'date': datetime.now().strftime('%Y-%m-%d'),
+        'timestamp': datetime.now().isoformat(),
+        'mode': mode,
+        'results': {k: ('OK' if v else 'FAILED') for k, v in results.items()},
+        'success_count': sum(1 for v in results.values() if v),
+        'fail_count': sum(1 for v in results.values() if not v),
+    }
+
+    # 기존 리포트가 있으면 병합 (같은 날 여러 번 실행 시)
+    if os.path.exists(report_path):
+        try:
+            with open(report_path) as f:
+                existing = json.load(f)
+            if isinstance(existing, list):
+                existing.append(report)
+            else:
+                existing = [existing, report]
+            report = existing
+        except Exception:
+            report = [report]
+    else:
+        report = [report]
+
+    with open(report_path, 'w') as f:
+        json.dump(report, f, indent=2, ensure_ascii=False)
+
+    logger.info(f"Daily report saved: {report_path}")
+
+
+def write_github_summary(results: dict, mode: str):
+    """GitHub Actions Job Summary 출력"""
+    summary_file = os.environ.get('GITHUB_STEP_SUMMARY')
+    if not summary_file:
+        return
+
+    lines = [
+        f"## Sentirax {mode} - {datetime.now().strftime('%Y-%m-%d %H:%M')} UTC",
+        "",
+        "| Task | Status |",
+        "|------|--------|",
+    ]
+    for task, success in results.items():
+        status = "OK" if success else "FAILED"
+        lines.append(f"| {task} | {status} |")
+
+    lines.append("")
+    ok = sum(1 for v in results.values() if v)
+    fail = sum(1 for v in results.values() if not v)
+    lines.append(f"**Result:** {ok} succeeded, {fail} failed")
+
+    with open(summary_file, 'a') as f:
+        f.write('\n'.join(lines) + '\n')
 
 
 def load_env_from_github():
@@ -241,8 +339,18 @@ def main():
     logger.info(f"Sentirax started at {datetime.now()}")
     logger.info(f"Project: {PROJECT_ROOT}")
 
+    # 미국 휴장일 체크
+    if is_us_market_holiday():
+        logger.info(f"US market is CLOSED today ({date.today()}). Skipping all trading.")
+        write_github_summary({'holiday_skip': True}, 'Holiday')
+        return
+
     # GitHub Actions에서 실행 시 .env 생성
     load_env_from_github()
+
+    # 실행 모드 판별
+    mode_parts = [k for k, v in vars(args).items() if v and k != 'all']
+    mode = '+'.join(mode_parts) if mode_parts else 'all'
 
     results = {}
 
@@ -274,6 +382,10 @@ def main():
     for task, success in results.items():
         logger.info(f"  {task}: {'OK' if success else 'FAILED'}")
     logger.info(f"Finished at {datetime.now()}")
+
+    # 일일 리포트 저장 + GitHub Summary
+    save_daily_report(results, mode)
+    write_github_summary(results, mode)
 
 
 if __name__ == "__main__":

@@ -49,12 +49,32 @@ jobs:
           SCALPING_DURATION: '210'
         run: python cloud/run_cloud.py --scalping-continuous
 
+      - name: Save checkpoint for Phase 2
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scalping-checkpoint
+          path: results/scalping_checkpoint.json
+          retention-days: 1
+
+      - name: Job Summary
+        if: always()
+        run: |
+          echo "### Scalping Phase 1 Results" >> $GITHUB_STEP_SUMMARY
+          if [ -f results/scalping_checkpoint.json ]; then
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat results/scalping_checkpoint.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: scalping-phase1-${{ github.run_number }}
-          path: logs/
+          path: |
+            logs/
+            results/scalping_summary_*.json
           retention-days: 7
 
   # Phase 2: 후반 3.5시간 (KST 03:05 ~ 06:30)
@@ -76,6 +96,13 @@ jobs:
       - name: Install dependencies
         run: pip install -r cloud/requirements-cloud.txt
 
+      - name: Restore checkpoint from Phase 1
+        uses: actions/download-artifact@v4
+        with:
+          name: scalping-checkpoint
+          path: results/
+        continue-on-error: true
+
       - name: Scalping Phase 2 (3.5 hours)
         env:
           HT_API_KEY: ${{ secrets.HT_API_KEY }}
@@ -85,10 +112,22 @@ jobs:
           SCALPING_DURATION: '210'
         run: python cloud/run_cloud.py --scalping-continuous
 
+      - name: Job Summary
+        if: always()
+        run: |
+          echo "### Scalping Phase 2 Results" >> $GITHUB_STEP_SUMMARY
+          if [ -f results/scalping_summary_$(date +%Y%m%d).json ]; then
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat results/scalping_summary_$(date +%Y%m%d).json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
       - name: Upload logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: scalping-phase2-${{ github.run_number }}
-          path: logs/
+          path: |
+            logs/
+            results/scalping_summary_*.json
           retention-days: 7
