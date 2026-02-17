@@ -216,7 +216,7 @@ def train_scalping_model(ticker: str, df_raw: pd.DataFrame) -> dict:
     # 5. GradientBoosting 학습 (스캘핑에 더 적합)
     print(f"  4. GradientBoosting Training...")
     model = GradientBoostingClassifier(
-        n_estimators=200,
+        n_estimators=150,
         max_depth=4,
         learning_rate=0.1,
         subsample=0.8,
@@ -335,11 +335,16 @@ def main():
     print("  TP=5%, SL=3%, MaxHold=60min, Interval=1min")
     print()
 
-    # 급등주 목록 로드
+    # 급등주 목록 로드 (오프닝 서지 우선, 없으면 기존 파일)
     results_dir = os.path.join(os.path.dirname(__file__), '..', 'results')
+    opening_file = os.path.join(results_dir, 'opening_surge_today.csv')
     surging_file = os.path.join(results_dir, 'surging_stocks_today.csv')
 
-    if os.path.exists(surging_file):
+    if os.path.exists(opening_file):
+        df_surging = pd.read_csv(opening_file)
+        tickers = df_surging['ticker'].tolist()
+        print(f"  Loaded {len(tickers)} stocks from opening surge scan")
+    elif os.path.exists(surging_file):
         df_surging = pd.read_csv(surging_file)
         tickers = df_surging['ticker'].tolist()
         print(f"  Loaded {len(tickers)} surging stocks from file")

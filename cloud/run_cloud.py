@@ -235,7 +235,7 @@ def run_scalping(continuous: bool = False):
 
 
 def run_model_refresh():
-    """급등주 스캔 + 스캘핑 모델 재학습"""
+    """급등주 스캔 + 스캘핑 모델 재학습 (기존 방식)"""
     logger.info("=" * 70)
     logger.info("MODEL REFRESH - surging stocks + scalping retrain")
     logger.info("=" * 70)
@@ -254,6 +254,75 @@ def run_model_refresh():
     except Exception as e:
         logger.error(f"Model refresh error: {e}", exc_info=True)
         return False
+
+
+def run_opening_scan_and_trade():
+    """장 시작 30분 대기 → 오프닝 서지 스캔 → 모델 학습 → 스캘핑 연속 실행"""
+    import time as _time
+    from datetime import datetime, timezone
+
+    logger.info("=" * 70)
+    logger.info("OPENING SURGE SCALPING")
+    logger.info("=" * 70)
+
+    results = {}
+
+    # 1. 장 시작 후 30분까지 대기
+    # 미국 장 시작 = UTC 14:30 → 30분 후 = UTC 15:00
+    now_utc = datetime.now(timezone.utc)
+    market_open_30m = now_utc.replace(hour=15, minute=0, second=0, microsecond=0)
+
+    if now_utc < market_open_30m:
+        wait_seconds = (market_open_30m - now_utc).total_seconds()
+        logger.info(f"Waiting {wait_seconds/60:.1f}min until 30min after market open (UTC 15:00)...")
+        _time.sleep(wait_seconds)
+    else:
+        logger.info(f"Already past 30min mark (now={now_utc.strftime('%H:%M')} UTC). Proceeding immediately.")
+
+    # 2. 오프닝 서지 스캔
+    logger.info("=" * 70)
+    logger.info("OPENING SURGE SCAN")
+    logger.info("=" * 70)
+    try:
+        sys.path.insert(0, os.path.join(PROJECT_ROOT, 'scripts'))
+        from get_surging_stocks import scan_surging_stocks
+        top_stocks = scan_surging_stocks(top_n=20, opening_surge=True)
+
+        if top_stocks is not None and not top_stocks.empty:
+            tickers = top_stocks['ticker'].tolist()
+            logger.info(f"Opening surge: {len(tickers)} stocks selected: {tickers}")
+            results['opening_scan'] = True
+        else:
+            logger.warning("Opening surge scan found no stocks. Falling back to standard scan.")
+            top_stocks = scan_surging_stocks(top_n=20, opening_surge=False)
+            results['opening_scan'] = True
+    except Exception as e:
+        logger.error(f"Opening scan error: {e}", exc_info=True)
+        results['opening_scan'] = False
+        # 실패해도 기존 방식으로 대체 시도
+        try:
+            from get_surging_stocks import scan_surging_stocks
+            scan_surging_stocks(top_n=20, opening_surge=False)
+        except Exception:
+            pass
+
+    # 3. 스캘핑 모델 학습 (오프닝 서지 결과 또는 기존 surging_stocks_today.csv 사용)
+    logger.info("=" * 70)
+    logger.info("SCALPING MODEL TRAINING")
+    logger.info("=" * 70)
+    try:
+        from train_scalping_model import main as train_scalping
+        train_scalping()
+        results['model_train'] = True
+        logger.info("Scalping model training completed")
+    except Exception as e:
+        logger.error(f"Model training error: {e}", exc_info=True)
+        results['model_train'] = False
+
+    # 4. 스캘핑 연속 실행 (남은 시간)
+    results['scalping'] = run_scalping(continuous=True)
+
+    return results
 
 
 def run_swing_retrain():
@@ -325,6 +394,7 @@ def main():
     parser.add_argument('--swing', action='store_true', help='Swing trading')
     parser.add_argument('--scalping', action='store_true', help='Scalping single scan')
     parser.add_argument('--scalping-continuous', action='store_true', help='Scalping 2hr continuous')
+    parser.add_argument('--scalping-opening', action='store_true', help='Opening surge scan + train + scalping')
     parser.add_argument('--refresh', action='store_true', help='Surging stocks scan + scalping retrain')
     parser.add_argument('--retrain', action='store_true', help='Swing model daily retrain')
     parser.add_argument('--performance', action='store_true', help='Performance tracking + auto-switch')
@@ -371,6 +441,10 @@ def main():
 
     if args.scalping_continuous:
         results['scalping'] = run_scalping(continuous=True)
+
+    if args.scalping_opening:
+        opening_results = run_opening_scan_and_trade()
+        results.update(opening_results)
 
     if args.dashboard:
         results['dashboard'] = run_dashboard()

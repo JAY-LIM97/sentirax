@@ -1,6 +1,8 @@
 name: Scalping Bot (Full Market Hours)
 
 # 미국 장 시간 전체: KST 23:30 ~ 06:00 = UTC 14:30 ~ 21:00
+# Phase 1: 장 시작 → 30분 대기 → 오프닝 서지 스캔 → 모델 학습 → 스캘핑
+# Phase 2: Phase 1 체크포인트 복원 → 스캘핑 계속
 # GitHub Actions job 최대 6시간 → 2개 phase로 분할
 
 on:
@@ -14,10 +16,10 @@ on:
         default: 'all'
 
 jobs:
-  # Phase 1: 장 시작 ~ 3.5시간 (KST 23:35 ~ 03:05)
+  # Phase 1: 30분 대기 → 오프닝 서지 스캔 → 모델 학습 → 스캘핑 (~2.5시간)
   scalping-phase1:
     runs-on: ubuntu-latest
-    timeout-minutes: 240  # 4시간 (3.5hr + 여유)
+    timeout-minutes: 240  # 4시간 (여유 포함)
 
     steps:
       - name: Checkout
@@ -32,22 +34,14 @@ jobs:
       - name: Install dependencies
         run: pip install -r cloud/requirements-cloud.txt
 
-      - name: Refresh surging stocks + retrain scalping models
+      - name: Opening surge scan + train + scalping
         env:
           HT_API_KEY: ${{ secrets.HT_API_KEY }}
           HT_API_SECRET_KEY: ${{ secrets.HT_API_SECRET_KEY }}
           HT_API_FK_KEY: ${{ secrets.HT_API_FK_KEY }}
           HT_API_FK_SECRET_KEY: ${{ secrets.HT_API_FK_SECRET_KEY }}
-        run: python cloud/run_cloud.py --refresh
-
-      - name: Scalping Phase 1 (3.5 hours)
-        env:
-          HT_API_KEY: ${{ secrets.HT_API_KEY }}
-          HT_API_SECRET_KEY: ${{ secrets.HT_API_SECRET_KEY }}
-          HT_API_FK_KEY: ${{ secrets.HT_API_FK_KEY }}
-          HT_API_FK_SECRET_KEY: ${{ secrets.HT_API_FK_SECRET_KEY }}
-          SCALPING_DURATION: '210'
-        run: python cloud/run_cloud.py --scalping-continuous
+          SCALPING_DURATION: '150'
+        run: python cloud/run_cloud.py --scalping-opening
 
       - name: Save checkpoint for Phase 2
         if: always()
@@ -56,12 +50,29 @@ jobs:
           name: scalping-checkpoint
           path: results/scalping_checkpoint.json
           retention-days: 1
+          if-no-files-found: warn
+
+      - name: Save models for Phase 2
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: scalping-models
+          path: models/*_scalping.pkl
+          retention-days: 1
+          if-no-files-found: warn
 
       - name: Job Summary
         if: always()
         run: |
           echo "### Scalping Phase 1 Results" >> $GITHUB_STEP_SUMMARY
+          if [ -f results/opening_surge_today.csv ]; then
+            echo "**Opening Surge Stocks:**" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            head -21 results/opening_surge_today.csv >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
           if [ -f results/scalping_checkpoint.json ]; then
+            echo "**Checkpoint:**" >> $GITHUB_STEP_SUMMARY
             echo '```json' >> $GITHUB_STEP_SUMMARY
             cat results/scalping_checkpoint.json >> $GITHUB_STEP_SUMMARY
             echo '```' >> $GITHUB_STEP_SUMMARY
@@ -75,7 +86,10 @@ jobs:
           path: |
             logs/
             results/scalping_summary_*.json
+            results/opening_surge_today.csv
+            results/scalping_model_results.csv
           retention-days: 7
+          if-no-files-found: warn
 
   # Phase 2: 후반 3.5시간 (KST 03:05 ~ 06:30)
   scalping-phase2:
@@ -101,6 +115,13 @@ jobs:
         with:
           name: scalping-checkpoint
           path: results/
+        continue-on-error: true
+
+      - name: Restore models from Phase 1
+        uses: actions/download-artifact@v4
+        with:
+          name: scalping-models
+          path: models/
         continue-on-error: true
 
       - name: Scalping Phase 2 (3.5 hours)
@@ -131,3 +152,4 @@ jobs:
             logs/
             results/scalping_summary_*.json
           retention-days: 7
+          if-no-files-found: warn

@@ -541,6 +541,9 @@ class ScalpingBot:
         end_time = start_time + timedelta(minutes=duration_minutes)
         cycle = 0
 
+        # 시작 시 즉시 체크포인트 생성 (Phase 2 artifact 전달 보장)
+        self._save_checkpoint()
+
         try:
             while datetime.now() < end_time:
                 cycle += 1
@@ -630,6 +633,9 @@ class ScalpingBot:
         for s in buy_signals:
             print(f"    {s['ticker']}: ${s['price']:.2f} (prob={s['buy_prob']*100:.1f}%)")
         print(f"  NO signals:  {len(no_signals)}")
+
+        # 체크포인트 저장
+        self._save_checkpoint()
 
     def _print_summary(self):
         """거래 요약 출력"""
