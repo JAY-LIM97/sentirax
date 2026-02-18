@@ -1,6 +1,6 @@
 {
   "_comment": "이 파일을 GitHub 웹에서 수정하면 봇이 다음 스캔 때 실시간 반영합니다",
-  "_updated": "2026-02-16",
+  "_updated": "2026-02-18",
 
   "swing": {
     "enabled": true,
@@ -23,6 +23,18 @@
     "disabled_tickers": [],
     "forced_buy_tickers": [],
     "only_tickers": []
+  },
+
+  "allocation": {
+    "_comment": "30:70 비율은 항상 유지. 강한 신호(확률≥threshold)시 per_trade 비율 자동 상향",
+    "swing_pct": 0.30,
+    "scalping_pct": 0.70,
+    "swing_per_trade_pct": 0.30,
+    "scalping_per_trade_pct": 0.40,
+    "strong_signal_threshold": 0.70,
+    "strong_signal_scalping_pct": 0.60,
+    "strong_signal_swing_pct": 0.50,
+    "account_balance_usd": 200000
   },
 
   "risk": {

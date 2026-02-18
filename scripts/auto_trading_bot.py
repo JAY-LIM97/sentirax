@@ -273,6 +273,35 @@ class AutoTradingBot:
             'sell_probability': probability[0]
         }
 
+    def _calc_swing_qty(self, price: float, buy_prob: float) -> int:
+        """스윙 매수 수량 계산 (잔고 × 배분 비율 기반)"""
+        config = load_strategy_config()
+        alloc = config.get('allocation', {})
+        swing_pct = alloc.get('swing_pct', 0.30)
+        per_trade_pct = alloc.get('swing_per_trade_pct', 0.30)
+        strong_threshold = alloc.get('strong_signal_threshold', 0.70)
+        strong_pct = alloc.get('strong_signal_swing_pct', 0.50)
+
+        # 강한 신호 → per_trade 비율 자동 상향
+        if buy_prob >= strong_threshold:
+            per_trade_pct = min(strong_pct, 1.0)
+
+        # API 잔고 조회 시도
+        summary = self.api.get_account_summary()
+        if summary and summary.get('total_usd', 0) > 0:
+            total_usd = summary['total_usd']
+        else:
+            total_usd = float(alloc.get('account_balance_usd', 0))
+
+        if total_usd > 0 and price > 0:
+            budget = total_usd * swing_pct * per_trade_pct
+            qty = max(1, int(budget / price))
+            label = "강한" if buy_prob >= strong_threshold else "기본"
+            print(f"    [{label}신호] ${total_usd:,.0f}×{swing_pct:.0%}×{per_trade_pct:.0%}/${price:.2f} = {qty}주")
+            return qty
+
+        return config.get('swing', {}).get('order_quantity', 1)
+
     def execute_trade(self, ticker: str, signal: int, price: float, quantity: int = 1):
         """
         실제 매매 실행
@@ -287,11 +316,9 @@ class AutoTradingBot:
             주문 결과
         """
         if signal == 1:
-            # 매수
-            result = self.api.order_buy(ticker, quantity, price=0)  # 시장가
+            result = self.api.order_buy(ticker, quantity, price=price)
         else:
-            # 매도
-            result = self.api.order_sell(ticker, quantity, price=0)  # 시장가
+            result = self.api.order_sell(ticker, quantity, price=price)
 
         return result
 
@@ -343,13 +370,28 @@ class AutoTradingBot:
         for ticker in forced_buy:
             if execute:
                 print(f"\n  FORCED BUY: {ticker}")
-                self.api.order_buy(ticker, order_qty, price=0)
+                try:
+                    current_price = yf.Ticker(ticker).history(period='1d', interval='1m')['Close'].iloc[-1]
+                except Exception:
+                    current_price = 0
+                if current_price > 0:
+                    forced_qty = self._calc_swing_qty(current_price, 0.55)
+                    self.api.order_buy(ticker, forced_qty, price=current_price)
+                else:
+                    print(f"    Failed to get price for {ticker}, skipping")
 
         # 강제 매도 처리
         for ticker in forced_sell:
             if execute:
                 print(f"\n  FORCED SELL: {ticker}")
-                self.api.order_sell(ticker, order_qty, price=0)
+                try:
+                    current_price = yf.Ticker(ticker).history(period='1d', interval='1m')['Close'].iloc[-1]
+                except Exception:
+                    current_price = 0
+                if current_price > 0:
+                    self.api.order_sell(ticker, order_qty, price=current_price)
+                else:
+                    print(f"    Failed to get price for {ticker}, skipping")
 
         for ticker in tickers:
             try:
@@ -360,11 +402,14 @@ class AutoTradingBot:
 
                     if execute and prediction['buy_probability'] >= min_prob:
                         print(f"\n  Executing order...")
+                        dynamic_qty = self._calc_swing_qty(
+                            prediction['price'], prediction['buy_probability']
+                        )
                         order_result = self.execute_trade(
                             ticker,
                             prediction['signal'],
                             prediction['price'],
-                            quantity=order_qty
+                            quantity=dynamic_qty
                         )
 
                         if order_result:

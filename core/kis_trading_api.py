@@ -147,6 +147,19 @@ class KISTradingAPI:
             print(f"❌ 토큰 발급 오류: {e}")
             return False
 
+    # 거래소별 NYSE 종목 (기본값 NASD, 아래 목록은 NYSE)
+    _NYSE_TICKERS = {
+        'JPM', 'XOM', 'JNJ', 'WMT', 'PG', 'HD', 'BAC', 'CVX', 'ABBV', 'LLY',
+        'MRK', 'KO', 'TMO', 'ABT', 'CRM', 'MCD', 'ACN', 'DHR', 'NEE', 'PM',
+        'UNP', 'RTX', 'LOW', 'SLB', 'OXY', 'MPC', 'PSX', 'VLO', 'GS', 'MS',
+        'C', 'WFC', 'AXP', 'NKE', 'TGT', 'DG', 'CMG', 'YUM', 'PINS', 'S',
+        'CEG', 'BILL', 'PEP',
+    }
+
+    def _get_excg_cd(self, ticker: str) -> str:
+        """종목 티커로 KIS 해외거래소 코드 반환 (NASD / NYSE)"""
+        return 'NYSE' if ticker.upper() in self._NYSE_TICKERS else 'NASD'
+
     def set_account(self, account_no: str, account_code: str = "01"):
         """
         거래 계좌 설정
@@ -240,6 +253,40 @@ class KISTradingAPI:
             print(f"❌ 잔고 조회 오류: {e}")
             return None
 
+    def get_account_summary(self) -> Optional[Dict[str, float]]:
+        """
+        해외주식 계좌 요약 조회 (USD 기준)
+
+        Returns:
+            {'total_usd': 전체자산(USD), 'available_usd': 인출가능금액(USD)}
+            실패 시 None
+        """
+        data = self.get_balance()
+        if not data:
+            return None
+
+        output2 = data.get('output2', [])
+        if not output2:
+            return None
+
+        o2 = output2[0] if isinstance(output2, list) else output2
+
+        try:
+            # 외화 평가금액 (보유주식 포함 전체 USD 자산)
+            total_usd = float(o2.get('frcr_evlu_amt2') or 0)
+            # 해외인출가능금액 (매수에 사용 가능한 USD)
+            avail_usd = float(o2.get('ovrs_drwg_psbl_amt') or 0)
+
+            if total_usd > 0 or avail_usd > 0:
+                return {
+                    'total_usd': max(total_usd, avail_usd),
+                    'available_usd': avail_usd
+                }
+        except (ValueError, TypeError):
+            pass
+
+        return None
+
     def order_buy(self, ticker: str, quantity: int, price: float = 0) -> Optional[Dict[str, Any]]:
         """
         해외주식 매수 주문
@@ -255,12 +302,17 @@ class KISTradingAPI:
         if not self.account_no:
             raise KISAPIError("계좌번호가 설정되지 않았습니다.")
 
-        order_type = "00" if price == 0 else "01"  # 00: 시장가, 01: 지정가
-        order_type_name = "시장가" if price == 0 else f"지정가 ${price:.2f}"
+        # 미국주식 주문: ORD_DVSN "00"=지정가만 유효 (모의/실전 공통)
+        # 시장가(01) 없음 → 현재가로 지정가 주문 → 즉시 체결
+        if price <= 0:
+            print(f"❌ 매수 주문 실패: 현재가를 price로 전달해야 합니다 (price={price})")
+            return None
+
+        excg_cd = self._get_excg_cd(ticker)
 
         print(f"\n📈 매수 주문: {ticker}")
         print(f"  - 수량: {quantity}주")
-        print(f"  - 가격: {order_type_name}")
+        print(f"  - 가격: 지정가 ${price:.2f} / 거래소: {excg_cd}")
 
         url = f"{self.base_url}/uapi/overseas-stock/v1/trading/order"
 
@@ -271,12 +323,15 @@ class KISTradingAPI:
         body = {
             "CANO": self.account_no,
             "ACNT_PRDT_CD": self.account_code,
-            "OVRS_EXCG_CD": "NASD",  # 나스닥
-            "PDNO": ticker,  # 종목 코드
-            "ORD_QTY": str(quantity),  # 주문 수량
-            "OVRS_ORD_UNPR": str(price) if price > 0 else "0",  # 주문 단가
-            "ORD_SVR_DVSN_CD": "0",  # 주문구분 (0: 해외)
-            "ORD_DVSN": order_type  # 00: 시장가, 01: 지정가
+            "OVRS_EXCG_CD": excg_cd,
+            "PDNO": ticker,
+            "ORD_QTY": str(quantity),
+            "OVRS_ORD_UNPR": f"{price:.2f}",
+            "CTAC_TLNO": "",
+            "MGCO_APTM_ODNO": "",
+            "SLL_TYPE": "",
+            "ORD_SVR_DVSN_CD": "0",
+            "ORD_DVSN": "00",  # 지정가 (미국주식 유일 옵션, 모의투자도 동일)
         }
 
         try:
@@ -317,12 +372,16 @@ class KISTradingAPI:
         if not self.account_no:
             raise KISAPIError("계좌번호가 설정되지 않았습니다.")
 
-        order_type = "00" if price == 0 else "01"
-        order_type_name = "시장가" if price == 0 else f"지정가 ${price:.2f}"
+        # 미국주식 주문: ORD_DVSN "00"=지정가만 유효 (모의/실전 공통)
+        if price <= 0:
+            print(f"❌ 매도 주문 실패: 현재가를 price로 전달해야 합니다 (price={price})")
+            return None
+
+        excg_cd = self._get_excg_cd(ticker)
 
         print(f"\n📉 매도 주문: {ticker}")
         print(f"  - 수량: {quantity}주")
-        print(f"  - 가격: {order_type_name}")
+        print(f"  - 가격: 지정가 ${price:.2f} / 거래소: {excg_cd}")
 
         url = f"{self.base_url}/uapi/overseas-stock/v1/trading/order"
 
@@ -333,12 +392,15 @@ class KISTradingAPI:
         body = {
             "CANO": self.account_no,
             "ACNT_PRDT_CD": self.account_code,
-            "OVRS_EXCG_CD": "NASD",
+            "OVRS_EXCG_CD": excg_cd,
             "PDNO": ticker,
             "ORD_QTY": str(quantity),
-            "OVRS_ORD_UNPR": str(price) if price > 0 else "0",
+            "OVRS_ORD_UNPR": f"{price:.2f}",
+            "CTAC_TLNO": "",
+            "MGCO_APTM_ODNO": "",
+            "SLL_TYPE": "00",
             "ORD_SVR_DVSN_CD": "0",
-            "ORD_DVSN": order_type
+            "ORD_DVSN": "00",  # 지정가 (미국주식 유일 옵션, 모의투자도 동일)
         }
 
         try:

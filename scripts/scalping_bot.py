@@ -144,6 +144,7 @@ class ScalpingBot:
         # 포지션 추적
         self.positions = {}  # {ticker: {entry_price, quantity, entry_time, tp, sl}}
         self.trade_log = []
+        self._balance_cache = None  # 사이클별 잔고 캐시 (매 사이클 초기화)
         self.results_dir = os.path.join(os.path.dirname(__file__), '..', 'results')
         os.makedirs(self.results_dir, exist_ok=True)
 
@@ -255,6 +256,49 @@ class ScalpingBot:
                 print(f"  Restored {len(self.trade_log)} trade records from checkpoint")
         except Exception as e:
             print(f"  Checkpoint load error: {e}")
+
+    def _get_total_balance_usd(self, config: dict) -> float:
+        """계좌 총 USD 잔고 조회 (캐시 → API → 설정값 순서)"""
+        if self._balance_cache is not None:
+            return self._balance_cache
+
+        summary = self.api.get_account_summary()
+        if summary and summary.get('total_usd', 0) > 0:
+            self._balance_cache = summary['total_usd']
+            print(f"  Balance (API): ${self._balance_cache:,.0f}")
+            return self._balance_cache
+
+        alloc = config.get('allocation', {})
+        fallback = float(alloc.get('account_balance_usd', 0))
+        if fallback > 0:
+            self._balance_cache = fallback
+            print(f"  Balance (config): ${self._balance_cache:,.0f}")
+            return self._balance_cache
+
+        return 0.0
+
+    def _calc_scalping_qty(self, price: float, buy_prob: float, config: dict) -> int:
+        """스캘핑 매수 수량 계산 (잔고 × 배분 비율 기반)"""
+        alloc = config.get('allocation', {})
+        scalping_pct = alloc.get('scalping_pct', 0.70)
+        per_trade_pct = alloc.get('scalping_per_trade_pct', 0.40)
+        strong_threshold = alloc.get('strong_signal_threshold', 0.70)
+        strong_pct = alloc.get('strong_signal_scalping_pct', 0.60)
+
+        # 강한 신호 → per_trade 비율 자동 상향
+        if buy_prob >= strong_threshold:
+            per_trade_pct = min(strong_pct, 1.0)
+
+        total_usd = self._get_total_balance_usd(config)
+
+        if total_usd > 0 and price > 0:
+            budget = total_usd * scalping_pct * per_trade_pct
+            qty = max(1, int(budget / price))
+            label = "강한" if buy_prob >= strong_threshold else "기본"
+            print(f"    [{label}신호] ${total_usd:,.0f}×{scalping_pct:.0%}×{per_trade_pct:.0%}/${price:.2f} = {qty}주")
+            return qty
+
+        return config.get('scalping', {}).get('order_quantity', 1)
 
     def _save_daily_summary(self):
         """일일 스캘핑 요약 저장"""
@@ -369,8 +413,8 @@ class ScalpingBot:
         pos = self.positions[ticker]
         pnl_pct = (exit_price / pos['entry_price'] - 1) * 100
 
-        # 매도 주문
-        result = self.api.order_sell(ticker, pos['quantity'], price=0)
+        # 매도 주문 (현재가 기준 지정가 — 모의/실전 공통)
+        self.api.order_sell(ticker, pos['quantity'], price=exit_price)
 
         self.trade_log.append({
             'ticker': ticker,
@@ -388,6 +432,9 @@ class ScalpingBot:
         """
         스캘핑 1사이클 실행 (매 사이클마다 strategy.json 실시간 반영)
         """
+
+        # 매 사이클마다 잔고 캐시 리셋 (최신 잔고 반영)
+        self._balance_cache = None
 
         # 전략 설정 실시간 로드
         config = load_strategy_config()
@@ -462,18 +509,22 @@ class ScalpingBot:
                 if ticker in forced_buy:
                     print(f"\n  FORCED BUY: {ticker}")
                     if execute:
-                        order_result = self.api.order_buy(ticker, order_qty, price=0)
+                        result = self.predict_entry(ticker, model_data)
+                        current_price = result['price'] if result else 0
+                        if current_price <= 0:
+                            print(f"    Failed to get price, skipping")
+                            continue
+                        forced_qty = self._calc_scalping_qty(current_price, 0.55, config)
+                        order_result = self.api.order_buy(ticker, forced_qty, price=current_price)
                         if order_result:
-                            result = self.predict_entry(ticker, model_data)
-                            price = result['price'] if result else 0
                             self.positions[ticker] = {
-                                'entry_price': price,
-                                'quantity': order_qty,
+                                'entry_price': current_price,
+                                'quantity': forced_qty,
                                 'entry_time': datetime.now(),
                                 'tp': tp_override or model_data['params']['take_profit'],
                                 'sl': sl_override or model_data['params']['stop_loss']
                             }
-                            print(f"    FORCED ORDER PLACED!")
+                            print(f"    FORCED ORDER PLACED! ({forced_qty}주)")
                     continue
 
                 result = self.predict_entry(ticker, model_data)
@@ -492,28 +543,30 @@ class ScalpingBot:
                     print(f"    Probability: {result['buy_prob']*100:.1f}%")
                     print(f"    TP: +{result['tp']}%, SL: -{result['sl']}%")
 
+                    buy_qty = self._calc_scalping_qty(result['price'], result['buy_prob'], config)
+
                     if execute:
-                        order_result = self.api.order_buy(ticker, order_qty, price=0)
+                        order_result = self.api.order_buy(ticker, buy_qty, price=result['price'])
                         if order_result:
                             self.positions[ticker] = {
                                 'entry_price': result['price'],
-                                'quantity': order_qty,
+                                'quantity': buy_qty,
                                 'entry_time': datetime.now(),
                                 'tp': result['tp'],
                                 'sl': result['sl']
                             }
-                            print(f"    ORDER PLACED!")
+                            print(f"    ORDER PLACED! ({buy_qty}주)")
                         else:
                             print(f"    ORDER FAILED")
                     else:
                         self.positions[ticker] = {
                             'entry_price': result['price'],
-                            'quantity': order_qty,
+                            'quantity': buy_qty,
                             'entry_time': datetime.now(),
                             'tp': result['tp'],
                             'sl': result['sl']
                         }
-                        print(f"    [SIMULATED]")
+                        print(f"    [SIMULATED] ({buy_qty}주)")
 
                 else:
                     signal_text = "BUY" if result['signal'] == 1 else "NO"
@@ -618,12 +671,15 @@ class ScalpingBot:
 
         # 매수 신호 있는 종목에 주문
         if execute and buy_signals:
+            config = load_strategy_config()
+            min_prob = config.get('scalping', {}).get('min_probability', 0.55)
             print(f"\n  Executing {len(buy_signals)} buy orders...")
             for sig in buy_signals:
-                if sig['buy_prob'] >= 0.55:
-                    result = self.api.order_buy(sig['ticker'], 1, price=0)
+                if sig['buy_prob'] >= min_prob:
+                    buy_qty = self._calc_scalping_qty(sig['price'], sig['buy_prob'], config)
+                    result = self.api.order_buy(sig['ticker'], buy_qty, price=sig['price'])
                     status = "OK" if result else "FAIL"
-                    print(f"  ORDER {sig['ticker']}: {status}")
+                    print(f"  ORDER {sig['ticker']}: {status} ({buy_qty}주 @ ${sig['price']:.2f})")
 
         # 요약
         print(f"\n{'='*70}")
