@@ -29,6 +29,9 @@ from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.preprocessing import StandardScaler
 from sklearn.metrics import accuracy_score, f1_score, classification_report
 
+# 공유 Feature Engineering (core/scalping_signals.py)
+from core.scalping_signals import create_scalping_features
+
 
 def collect_intraday_data(ticker: str, period: str = '5d') -> pd.DataFrame:
     """1분봉 인트라데이 데이터 수집"""
@@ -44,70 +47,6 @@ def collect_intraday_data(ticker: str, period: str = '5d') -> pd.DataFrame:
     except Exception as e:
         print(f"  Error collecting {ticker}: {e}")
         return None
-
-
-def create_scalping_features(df: pd.DataFrame) -> pd.DataFrame:
-    """스캘핑용 Feature Engineering (1분봉)"""
-
-    feat = pd.DataFrame(index=df.index)
-
-    # 가격 기반
-    feat['close'] = df['Close']
-    feat['volume'] = df['Volume']
-
-    # 수익률 (1분, 3분, 5분, 10분, 15분, 30분)
-    for period in [1, 3, 5, 10, 15, 30]:
-        feat[f'return_{period}m'] = df['Close'].pct_change(period) * 100
-
-    # 이동평균 (5분, 10분, 20분, 60분)
-    for period in [5, 10, 20, 60]:
-        feat[f'ma_{period}m'] = df['Close'].rolling(period).mean()
-        feat[f'price_to_ma_{period}m'] = (df['Close'] / feat[f'ma_{period}m'] - 1) * 100
-
-    # 볼린저 밴드 (20분)
-    ma20 = df['Close'].rolling(20).mean()
-    std20 = df['Close'].rolling(20).std()
-    feat['bb_upper'] = (df['Close'] - (ma20 + 2 * std20)) / df['Close'] * 100
-    feat['bb_lower'] = (df['Close'] - (ma20 - 2 * std20)) / df['Close'] * 100
-    feat['bb_width'] = (4 * std20) / ma20 * 100
-
-    # RSI (14분)
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    rs = gain / loss
-    feat['rsi_14m'] = 100 - (100 / (1 + rs))
-
-    # 거래량 지표
-    feat['volume_ratio_5m'] = df['Volume'] / df['Volume'].rolling(5).mean()
-    feat['volume_ratio_20m'] = df['Volume'] / df['Volume'].rolling(20).mean()
-    feat['volume_spike'] = (df['Volume'] > df['Volume'].rolling(20).mean() * 2).astype(int)
-
-    # 캔들스틱 패턴
-    feat['candle_body'] = (df['Close'] - df['Open']) / df['Open'] * 100
-    feat['candle_wick_upper'] = (df['High'] - df[['Open', 'Close']].max(axis=1)) / df['Open'] * 100
-    feat['candle_wick_lower'] = (df[['Open', 'Close']].min(axis=1) - df['Low']) / df['Open'] * 100
-
-    # 고가/저가 대비
-    day_high = df['High'].rolling(60).max()
-    day_low = df['Low'].rolling(60).min()
-    feat['price_position'] = (df['Close'] - day_low) / (day_high - day_low + 0.001) * 100
-
-    # 모멘텀 가속도
-    ret_1m = df['Close'].pct_change() * 100
-    feat['momentum_accel'] = ret_1m.diff()  # 모멘텀 변화율
-
-    # 변동성
-    feat['volatility_5m'] = df['Close'].pct_change().rolling(5).std() * 100
-    feat['volatility_20m'] = df['Close'].pct_change().rolling(20).std() * 100
-
-    # VWAP (Volume Weighted Average Price)
-    typical_price = (df['High'] + df['Low'] + df['Close']) / 3
-    cum_vol = df['Volume'].cumsum()
-    cum_vwap = (typical_price * df['Volume']).cumsum()
-    feat['vwap_deviation'] = (df['Close'] / (cum_vwap / cum_vol) - 1) * 100
-
-    return feat
 
 
 def label_scalping(df: pd.DataFrame, take_profit: float = 5.0, stop_loss: float = 3.0,

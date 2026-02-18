@@ -22,11 +22,11 @@ if platform.system() == 'Windows':
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
-import numpy as np
 import yfinance as yf
 from datetime import datetime, timedelta
 
 from core.kis_trading_api import KISTradingAPI
+from core.scalping_signals import create_scalping_features, compute_rule_signals
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -67,59 +67,6 @@ def load_strategy_config() -> dict:
             'paper_trading': True
         }
     }
-
-
-# 스캘핑 Feature 생성 함수 (train_scalping_model.py와 동일)
-def create_scalping_features(df: pd.DataFrame) -> pd.DataFrame:
-    """스캘핑용 Feature Engineering (1분봉)"""
-
-    feat = pd.DataFrame(index=df.index)
-    feat['close'] = df['Close']
-    feat['volume'] = df['Volume']
-
-    for period in [1, 3, 5, 10, 15, 30]:
-        feat[f'return_{period}m'] = df['Close'].pct_change(period) * 100
-
-    for period in [5, 10, 20, 60]:
-        feat[f'ma_{period}m'] = df['Close'].rolling(period).mean()
-        feat[f'price_to_ma_{period}m'] = (df['Close'] / feat[f'ma_{period}m'] - 1) * 100
-
-    ma20 = df['Close'].rolling(20).mean()
-    std20 = df['Close'].rolling(20).std()
-    feat['bb_upper'] = (df['Close'] - (ma20 + 2 * std20)) / df['Close'] * 100
-    feat['bb_lower'] = (df['Close'] - (ma20 - 2 * std20)) / df['Close'] * 100
-    feat['bb_width'] = (4 * std20) / ma20 * 100
-
-    delta = df['Close'].diff()
-    gain = (delta.where(delta > 0, 0)).rolling(14).mean()
-    loss = (-delta.where(delta < 0, 0)).rolling(14).mean()
-    rs = gain / loss
-    feat['rsi_14m'] = 100 - (100 / (1 + rs))
-
-    feat['volume_ratio_5m'] = df['Volume'] / df['Volume'].rolling(5).mean()
-    feat['volume_ratio_20m'] = df['Volume'] / df['Volume'].rolling(20).mean()
-    feat['volume_spike'] = (df['Volume'] > df['Volume'].rolling(20).mean() * 2).astype(int)
-
-    feat['candle_body'] = (df['Close'] - df['Open']) / df['Open'] * 100
-    feat['candle_wick_upper'] = (df['High'] - df[['Open', 'Close']].max(axis=1)) / df['Open'] * 100
-    feat['candle_wick_lower'] = (df[['Open', 'Close']].min(axis=1) - df['Low']) / df['Open'] * 100
-
-    day_high = df['High'].rolling(60).max()
-    day_low = df['Low'].rolling(60).min()
-    feat['price_position'] = (df['Close'] - day_low) / (day_high - day_low + 0.001) * 100
-
-    ret_1m = df['Close'].pct_change() * 100
-    feat['momentum_accel'] = ret_1m.diff()
-
-    feat['volatility_5m'] = df['Close'].pct_change().rolling(5).std() * 100
-    feat['volatility_20m'] = df['Close'].pct_change().rolling(20).std() * 100
-
-    typical_price = (df['High'] + df['Low'] + df['Close']) / 3
-    cum_vol = df['Volume'].cumsum()
-    cum_vwap = (typical_price * df['Volume']).cumsum()
-    feat['vwap_deviation'] = (df['Close'] / (cum_vwap / cum_vol) - 1) * 100
-
-    return feat
 
 
 class ScalpingBot:
@@ -328,43 +275,72 @@ class ScalpingBot:
         print(f"\n  Daily summary saved: {path}")
 
     def predict_entry(self, ticker: str, model_data: dict) -> dict:
-        """매수 진입 신호 예측"""
+        """
+        매수 진입 신호 예측 (ML + Rule 앙상블)
 
+        진입 조건 (OR):
+          A) ML 신호(1) AND ML확률 >= min_prob  [기본]
+          B) ML확률 >= min_prob-0.10 AND 룰점수 >= 2 AND 거짓돌파 아님  [룰 보조]
+          C) 룰점수 == 3 AND ML확률 >= 0.40  [3전략 모두 일치]
+        """
         df = self.get_latest_1min_data(ticker)
         if df is None or len(df) < 60:
             return None
 
-        model = model_data['model']
-        scaler = model_data['scaler']
+        model        = model_data['model']
+        scaler       = model_data['scaler']
         feature_names = model_data['feature_names']
-        params = model_data['params']
+        params       = model_data['params']
 
-        # Feature 생성
+        # ML Feature — 기존 모델이 저장한 피처명만 사용 (하위 호환)
         features = create_scalping_features(df)
-        X = features[feature_names]
+        # 모델에 없는 새 피처는 자동 무시
+        available = [f for f in feature_names if f in features.columns]
+        X = features[available]
         valid_idx = X.notna().all(axis=1)
         X_clean = X[valid_idx]
 
         if len(X_clean) == 0:
             return None
 
-        # 최신 데이터로 예측
         X_latest = X_clean.iloc[-1:]
         X_scaled = scaler.transform(X_latest)
 
-        prediction = model.predict(X_scaled)[0]
+        prediction  = model.predict(X_scaled)[0]
         probability = model.predict_proba(X_scaled)[0]
+        buy_prob    = float(probability[1]) if len(probability) > 1 else 0.0
 
-        current_price = df['Close'].iloc[-1]
+        current_price = float(df['Close'].iloc[-1])
+
+        # ── Rule-based 신호 (3전략) ──────────────────────────────────────────
+        rule = compute_rule_signals(df)
+        score = rule['signal_score']
+
+        # 룰 신호가 2개 이상이면 동적 TP/SL 사용, 아니면 모델 기본값
+        if score >= 2:
+            tp = rule['dynamic_tp']
+            sl = rule['dynamic_sl']
+        else:
+            tp = params['take_profit']
+            sl = params['stop_loss']
+
+        # 룰 점수만큼 ML 확률 보정 (최대 +30%)
+        buy_prob_adj = min(buy_prob * (1 + 0.10 * score), 0.99)
 
         return {
-            'ticker': ticker,
-            'signal': int(prediction),
-            'buy_prob': probability[1] if len(probability) > 1 else 0,
-            'price': current_price,
-            'tp': params['take_profit'],
-            'sl': params['stop_loss'],
-            'time': datetime.now()
+            'ticker':        ticker,
+            'signal':        int(prediction),
+            'buy_prob':      buy_prob,
+            'buy_prob_adj':  buy_prob_adj,
+            'price':         current_price,
+            'tp':            tp,
+            'sl':            sl,
+            's1':            rule['s1'],
+            's2':            rule['s2'],
+            's3':            rule['s3'],
+            'signal_score':  score,
+            'breakdown_risk': rule['breakdown_risk'],
+            'time':          datetime.now()
         }
 
     def check_positions(self):
@@ -537,23 +513,45 @@ class ScalpingBot:
                 if sl_override:
                     result['sl'] = sl_override
 
-                if result['signal'] == 1 and result['buy_prob'] >= min_prob:
-                    print(f"\n  BUY SIGNAL: {ticker}")
+                # ── 진입 조건 (ML + Rule 앙상블) ────────────────────────────
+                score = result['signal_score']
+                prob  = result['buy_prob']
+                prob_adj = result['buy_prob_adj']
+
+                # A) ML 기본: 신호=1 AND 확률 충족
+                ml_ok   = result['signal'] == 1 and prob >= min_prob
+                # B) 룰 보조: 룰 2개+ AND 확률 10%p 완화 AND 거짓돌파 아님
+                rule_ok = score >= 2 and prob >= max(min_prob - 0.10, 0.40) and not result['breakdown_risk']
+                # C) 룰 3개 일치: 확률 0.40 이상이면 진입
+                rule_strong = score == 3 and prob >= 0.40 and not result['breakdown_risk']
+
+                enter = ml_ok or rule_ok or rule_strong
+
+                if enter:
+                    # 진입 사유 태그
+                    tags = []
+                    if ml_ok:   tags.append("ML")
+                    if rule_ok or rule_strong: tags.append(f"RULE({score})")
+                    if result['s1']: tags.append("S1-Box")
+                    if result['s2']: tags.append("S2-EMA")
+                    if result['s3']: tags.append("S3-Liq")
+
+                    print(f"\n  BUY SIGNAL: {ticker} [{' '.join(tags)}]")
                     print(f"    Price: ${result['price']:.2f}")
-                    print(f"    Probability: {result['buy_prob']*100:.1f}%")
+                    print(f"    ML prob: {prob*100:.1f}% → adj: {prob_adj*100:.1f}%")
                     print(f"    TP: +{result['tp']}%, SL: -{result['sl']}%")
 
-                    buy_qty = self._calc_scalping_qty(result['price'], result['buy_prob'], config)
+                    buy_qty = self._calc_scalping_qty(result['price'], prob_adj, config)
 
                     if execute:
                         order_result = self.api.order_buy(ticker, buy_qty, price=result['price'])
                         if order_result:
                             self.positions[ticker] = {
                                 'entry_price': result['price'],
-                                'quantity': buy_qty,
-                                'entry_time': datetime.now(),
-                                'tp': result['tp'],
-                                'sl': result['sl']
+                                'quantity':    buy_qty,
+                                'entry_time':  datetime.now(),
+                                'tp':          result['tp'],
+                                'sl':          result['sl']
                             }
                             print(f"    ORDER PLACED! ({buy_qty}주)")
                         else:
@@ -561,16 +559,17 @@ class ScalpingBot:
                     else:
                         self.positions[ticker] = {
                             'entry_price': result['price'],
-                            'quantity': buy_qty,
-                            'entry_time': datetime.now(),
-                            'tp': result['tp'],
-                            'sl': result['sl']
+                            'quantity':    buy_qty,
+                            'entry_time':  datetime.now(),
+                            'tp':          result['tp'],
+                            'sl':          result['sl']
                         }
                         print(f"    [SIMULATED] ({buy_qty}주)")
 
                 else:
-                    signal_text = "BUY" if result['signal'] == 1 else "NO"
-                    print(f"  {ticker}: {signal_text} (prob={result['buy_prob']*100:.1f}%)")
+                    strats = f"S1={result['s1']} S2={result['s2']} S3={result['s3']}"
+                    sig_txt = "ML" if result['signal'] == 1 else "NO"
+                    print(f"  {ticker}: {sig_txt} prob={prob*100:.1f}% rule={score} | {strats}")
 
     def run_continuous(self, models: dict, duration_minutes: int = 120,
                        interval_seconds: int = 60, execute: bool = False):
