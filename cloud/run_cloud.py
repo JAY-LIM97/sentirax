@@ -142,7 +142,7 @@ def run_kr_swing_trading():
 
     try:
         from scripts.domestic_swing_bot import DomesticSwingBot
-        bot = DomesticSwingBot(paper_trading=True, account_no="72719450")
+        bot = DomesticSwingBot(paper_trading=True, account_no="50163140")
         bot.run_once(execute=True)
         logger.info("KR Swing trading completed")
         return True
@@ -160,7 +160,7 @@ def run_kr_scalping(continuous: bool = False):
     try:
         from scripts.domestic_scalping_bot import DomesticScalpingBot
 
-        bot = DomesticScalpingBot(paper_trading=True, account_no="72719450")
+        bot = DomesticScalpingBot(paper_trading=True, account_no="50163140")
 
         logger.info("Loading KR scalping models...")
         models = bot.load_kr_models()
