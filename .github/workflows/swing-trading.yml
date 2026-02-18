@@ -2,8 +2,8 @@ name: Swing Trading Bot
 
 on:
   schedule:
-    # 매일 KST 23:30 = UTC 14:30 (겨울) / 월~금만
-    - cron: '30 14 * * 1-5'
+    # KST 23:33 = UTC 14:33 (:30 혼잡 회피)
+    - cron: '33 14 * * 1-5'
   workflow_dispatch:  # 수동 실행 가능
 
 jobs:

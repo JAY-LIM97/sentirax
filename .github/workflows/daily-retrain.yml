@@ -2,8 +2,8 @@ name: Daily Model Retrain + Performance
 
 on:
   schedule:
-    # 매일 KST 22:00 = UTC 13:00 / 장 시작 1.5시간 전에 재학습
-    - cron: '0 13 * * 1-5'
+    # KST 22:07 = UTC 13:07 (:00 혼잡 회피)
+    - cron: '7 13 * * 1-5'
   workflow_dispatch:
 
 jobs:

@@ -47,9 +47,25 @@ def load_strategy_config() -> dict:
             return json.load(f)
     return {}
 
-# TOP 20 종목 중 모델 저장된 14개 (500일 백테스팅 통과)
-TOP20_TICKERS = ['NVDA', 'AAPL', 'GOOGL', 'MSFT', 'AMZN', 'META', 'TSLA', 'AVGO',
-                 'JPM', 'ABBV', 'HD', 'BAC', 'PG', 'CVX']
+# 해외 스윙 40개 유니버스 (500일 백테스팅 대상)
+TOP20_TICKERS = [
+    # Mega Cap Tech (10)
+    'NVDA', 'AAPL', 'GOOGL', 'MSFT', 'AMZN', 'META', 'TSLA', 'AVGO', 'AMD', 'NFLX',
+    # 반도체 / 하드웨어 (5)
+    'QCOM', 'TXN', 'MU', 'AMAT', 'MRVL',
+    # 클라우드 / 사이버보안 (5)
+    'CRM', 'ORCL', 'CRWD', 'PANW', 'NET',
+    # 금융 (5)
+    'JPM', 'BAC', 'GS', 'MS', 'AXP',
+    # 헬스케어 (5)
+    'ABBV', 'LLY', 'UNH', 'JNJ', 'MRK',
+    # 소비재 / 리테일 (5)
+    'HD', 'COST', 'WMT', 'MCD', 'NKE',
+    # 에너지 / 산업재 (3)
+    'CVX', 'PG', 'UNP',
+    # 고변동성 성장주 (2)
+    'PLTR', 'SMCI',
+]
 
 
 class AutoTradingBot:
