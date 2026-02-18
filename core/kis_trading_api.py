@@ -426,6 +426,163 @@ class KISTradingAPI:
             print(f"❌ 매도 주문 오류: {e}")
             return None
 
+    # =========================================================
+    # 국내주식 주문/잔고 (KRW 기준)
+    # TR_ID: 매수 TTTC0012U→VTTC0012U, 매도 TTTC0011U→VTTC0011U
+    # =========================================================
+
+    def order_buy_domestic(self, ticker: str, quantity: int, price: int) -> Optional[Dict[str, Any]]:
+        """국내주식 현금 매수 (지정가, KRW)"""
+        if not self.account_no:
+            raise KISAPIError("계좌번호가 설정되지 않았습니다.")
+        if price <= 0:
+            print(f"❌ [국내] 매수 주문 실패: price={price} (현재가 필요)")
+            return None
+
+        print(f"\n📈 [국내] 매수 주문: {ticker} / {quantity}주 / {price:,}원 (지정가)")
+
+        url = f"{self.base_url}/uapi/domestic-stock/v1/trading/order-cash"
+        tr_id = "TTTC0012U"  # 실전→VTTC0012U (T→V 자동변환)
+        headers = self._get_headers(tr_id)
+
+        body = {
+            "CANO": self.account_no,
+            "ACNT_PRDT_CD": self.account_code,
+            "PDNO": ticker,
+            "ORD_DVSN": "00",
+            "ORD_QTY": str(quantity),
+            "ORD_UNPR": str(price),
+            "EXCG_ID_DVSN_CD": "KRX",
+            "SLL_TYPE": "",
+            "CNDT_PRIC": ""
+        }
+
+        try:
+            response = requests.post(url, headers=headers, data=json.dumps(body))
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('rt_cd') == '0':
+                    order_no = data.get('output', {}).get('ODNO', 'N/A')
+                    print(f"✅ [국내] 매수 주문 성공 - 주문번호: {order_no}")
+                    return data
+                else:
+                    print(f"❌ [국내] 매수 주문 실패: {data.get('msg1')}")
+                    return None
+            else:
+                print(f"❌ [국내] API 호출 실패: {response.status_code}")
+                return None
+        except Exception as e:
+            print(f"❌ [국내] 매수 주문 오류: {e}")
+            return None
+
+    def order_sell_domestic(self, ticker: str, quantity: int, price: int) -> Optional[Dict[str, Any]]:
+        """국내주식 현금 매도 (지정가, KRW)"""
+        if not self.account_no:
+            raise KISAPIError("계좌번호가 설정되지 않았습니다.")
+        if price <= 0:
+            print(f"❌ [국내] 매도 주문 실패: price={price} (현재가 필요)")
+            return None
+
+        print(f"\n📉 [국내] 매도 주문: {ticker} / {quantity}주 / {price:,}원 (지정가)")
+
+        url = f"{self.base_url}/uapi/domestic-stock/v1/trading/order-cash"
+        tr_id = "TTTC0011U"  # 실전→VTTC0011U (T→V 자동변환)
+        headers = self._get_headers(tr_id)
+
+        body = {
+            "CANO": self.account_no,
+            "ACNT_PRDT_CD": self.account_code,
+            "PDNO": ticker,
+            "ORD_DVSN": "00",
+            "ORD_QTY": str(quantity),
+            "ORD_UNPR": str(price),
+            "EXCG_ID_DVSN_CD": "KRX",
+            "SLL_TYPE": "01",
+            "CNDT_PRIC": ""
+        }
+
+        try:
+            response = requests.post(url, headers=headers, data=json.dumps(body))
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('rt_cd') == '0':
+                    order_no = data.get('output', {}).get('ODNO', 'N/A')
+                    print(f"✅ [국내] 매도 주문 성공 - 주문번호: {order_no}")
+                    return data
+                else:
+                    print(f"❌ [국내] 매도 주문 실패: {data.get('msg1')}")
+                    return None
+            else:
+                print(f"❌ [국내] API 호출 실패: {response.status_code}")
+                return None
+        except Exception as e:
+            print(f"❌ [국내] 매도 주문 오류: {e}")
+            return None
+
+    def get_balance_domestic(self) -> Optional[Dict[str, Any]]:
+        """국내주식 잔고 조회"""
+        if not self.account_no:
+            raise KISAPIError("계좌번호가 설정되지 않았습니다.")
+
+        url = f"{self.base_url}/uapi/domestic-stock/v1/trading/inquire-balance"
+        tr_id = "TTTC8434R"  # 실전→VTTC8434R (T→V 자동변환)
+        headers = self._get_headers(tr_id)
+
+        params = {
+            "CANO": self.account_no,
+            "ACNT_PRDT_CD": self.account_code,
+            "AFHR_FLPR_YN": "N",
+            "OFL_YN": "",
+            "INQR_DVSN": "02",
+            "UNPR_DVSN": "01",
+            "FUND_STTL_ICLD_YN": "N",
+            "FNCG_AMT_AUTO_RDPT_YN": "N",
+            "PRCS_DVSN": "00",
+            "CTX_AREA_FK100": "",
+            "CTX_AREA_NK100": ""
+        }
+
+        try:
+            response = requests.get(url, headers=headers, params=params)
+            if response.status_code == 200:
+                data = response.json()
+                if data.get('rt_cd') == '0':
+                    return data
+                else:
+                    print(f"❌ [국내] 잔고 조회 실패: {data.get('msg1')}")
+                    return None
+            else:
+                print(f"❌ [국내] API 호출 실패: {response.status_code}")
+                return None
+        except Exception as e:
+            print(f"❌ [국내] 잔고 조회 오류: {e}")
+            return None
+
+    def get_account_summary_domestic(self) -> Optional[Dict[str, float]]:
+        """국내주식 계좌 요약 (KRW 기준)"""
+        data = self.get_balance_domestic()
+        if not data:
+            return None
+
+        output2 = data.get('output2', {})
+        if not output2:
+            return None
+
+        o2 = output2[0] if isinstance(output2, list) else output2
+
+        try:
+            available_krw = float(o2.get('dnca_tot_amt') or 0)   # 예수금 총액
+            total_krw = float(o2.get('tot_evlu_amt') or 0)        # 총 평가금액
+            if total_krw > 0 or available_krw > 0:
+                return {
+                    'total_krw': max(total_krw, available_krw),
+                    'available_krw': available_krw
+                }
+        except (ValueError, TypeError):
+            pass
+
+        return None
+
     def get_current_price(self, ticker: str) -> Optional[float]:
         """
         해외주식 현재가 조회

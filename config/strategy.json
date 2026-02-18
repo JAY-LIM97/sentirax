@@ -25,6 +25,31 @@
     "only_tickers": []
   },
 
+  "domestic_scalping": {
+    "enabled": true,
+    "max_positions": 5,
+    "min_probability": 0.55,
+    "order_quantity": 1,
+    "scan_interval_seconds": 60,
+    "min_volume_ratio": 1.5,
+    "disabled_tickers": [],
+    "forced_buy_tickers": [],
+    "only_tickers": []
+  },
+
+  "domestic_swing": {
+    "enabled": true,
+    "max_positions": 10,
+    "order_quantity": 1,
+    "rsi_buy_threshold": 35,
+    "rsi_sell_threshold": 70,
+    "min_volume_ratio": 1.5,
+    "disabled_tickers": [],
+    "forced_buy_tickers": [],
+    "forced_sell_tickers": [],
+    "universe_tickers": []
+  },
+
   "allocation": {
     "_comment": "30:70 비율은 항상 유지. 강한 신호(확률≥threshold)시 per_trade 비율 자동 상향",
     "swing_pct": 0.30,
@@ -34,7 +59,8 @@
     "strong_signal_threshold": 0.70,
     "strong_signal_scalping_pct": 0.60,
     "strong_signal_swing_pct": 0.50,
-    "account_balance_usd": 200000
+    "account_balance_usd": 200000,
+    "account_balance_krw": 30000000
   },
 
   "risk": {

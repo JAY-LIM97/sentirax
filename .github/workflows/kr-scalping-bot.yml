@@ -1,0 +1,151 @@
+name: KR Scalping Bot (KOSPI/KOSDAQ)
+
+# 한국 장 시간: KST 09:00~15:30 = UTC 00:00~06:30
+# Phase 1: KST 09:35 시작 → 30분 대기 → 오프닝 서지 스캔 → 모델 학습 → 스캘핑
+# Phase 2: Phase 1 체크포인트 복원 → 스캘핑 계속
+
+on:
+  schedule:
+    # Phase 1: KST 09:35 = UTC 00:35
+    - cron: '35 0 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      phase:
+        description: 'Phase (1=first 3hr, 2=last 3hr, all=both)'
+        default: 'all'
+
+jobs:
+  # Phase 1: 30분 대기 → 오프닝 서지 스캔 → 모델 학습 → 스캘핑 (~2.5시간)
+  kr-scalping-phase1:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r cloud/requirements-cloud.txt
+
+      - name: KR Opening surge scan + train + scalping
+        env:
+          HT_API_KEY: ${{ secrets.HT_API_KEY }}
+          HT_API_SECRET_KEY: ${{ secrets.HT_API_SECRET_KEY }}
+          HT_API_FK_KEY: ${{ secrets.HT_API_FK_KEY }}
+          HT_API_FK_SECRET_KEY: ${{ secrets.HT_API_FK_SECRET_KEY }}
+          SCALPING_DURATION: '150'
+        run: python cloud/run_cloud.py --kr-scalping-opening
+
+      - name: Save checkpoint for Phase 2
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kr-scalping-checkpoint
+          path: results/domestic_scalping_checkpoint.json
+          retention-days: 1
+          if-no-files-found: warn
+
+      - name: Save models for Phase 2
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kr-scalping-models
+          path: models/*_kr_scalping.pkl
+          retention-days: 1
+          if-no-files-found: warn
+
+      - name: Job Summary
+        if: always()
+        run: |
+          echo "### KR Scalping Phase 1 Results" >> $GITHUB_STEP_SUMMARY
+          if [ -f results/domestic_surge_today.csv ]; then
+            echo "**Opening Surge Stocks:**" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            head -21 results/domestic_surge_today.csv >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+          if [ -f results/domestic_scalping_checkpoint.json ]; then
+            echo "**Checkpoint:**" >> $GITHUB_STEP_SUMMARY
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat results/domestic_scalping_checkpoint.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kr-scalping-phase1-${{ github.run_number }}
+          path: |
+            logs/
+            results/domestic_surge_today.csv
+          retention-days: 7
+          if-no-files-found: warn
+
+  # Phase 2: 후반 3시간 (KST ~13:05 ~ 15:30)
+  kr-scalping-phase2:
+    runs-on: ubuntu-latest
+    needs: kr-scalping-phase1
+    timeout-minutes: 240
+
+    steps:
+      - name: Checkout (latest strategy.json)
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r cloud/requirements-cloud.txt
+
+      - name: Restore checkpoint from Phase 1
+        uses: actions/download-artifact@v4
+        with:
+          name: kr-scalping-checkpoint
+          path: results/
+        continue-on-error: true
+
+      - name: Restore models from Phase 1
+        uses: actions/download-artifact@v4
+        with:
+          name: kr-scalping-models
+          path: models/
+        continue-on-error: true
+
+      - name: KR Scalping Phase 2
+        env:
+          HT_API_KEY: ${{ secrets.HT_API_KEY }}
+          HT_API_SECRET_KEY: ${{ secrets.HT_API_SECRET_KEY }}
+          HT_API_FK_KEY: ${{ secrets.HT_API_FK_KEY }}
+          HT_API_FK_SECRET_KEY: ${{ secrets.HT_API_FK_SECRET_KEY }}
+          SCALPING_DURATION: '180'
+        run: python cloud/run_cloud.py --kr-scalping-continuous
+
+      - name: Job Summary
+        if: always()
+        run: |
+          echo "### KR Scalping Phase 2 Results" >> $GITHUB_STEP_SUMMARY
+          if [ -f results/domestic_scalping_checkpoint.json ]; then
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat results/domestic_scalping_checkpoint.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kr-scalping-phase2-${{ github.run_number }}
+          path: |
+            logs/
+          retention-days: 7
+          if-no-files-found: warn

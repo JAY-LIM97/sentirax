@@ -1,0 +1,57 @@
+name: KR Swing Trading (KOSPI/KOSDAQ)
+
+# 한국 장 시작 직후 스윙 신호 스캔 + 주문 실행
+# KST 09:05 = UTC 00:05
+
+on:
+  schedule:
+    - cron: '5 0 * * 1-5'
+  workflow_dispatch:
+
+jobs:
+  kr-swing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r cloud/requirements-cloud.txt
+
+      - name: KR Swing Trading
+        env:
+          HT_API_KEY: ${{ secrets.HT_API_KEY }}
+          HT_API_SECRET_KEY: ${{ secrets.HT_API_SECRET_KEY }}
+          HT_API_FK_KEY: ${{ secrets.HT_API_FK_KEY }}
+          HT_API_FK_SECRET_KEY: ${{ secrets.HT_API_FK_SECRET_KEY }}
+        run: python cloud/run_cloud.py --kr-swing
+
+      - name: Job Summary
+        if: always()
+        run: |
+          echo "### KR Swing Trading Results" >> $GITHUB_STEP_SUMMARY
+          TODAY=$(date +%Y%m%d)
+          if [ -f results/domestic_swing_report_${TODAY}.json ]; then
+            echo '```json' >> $GITHUB_STEP_SUMMARY
+            cat results/domestic_swing_report_${TODAY}.json >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kr-swing-${{ github.run_number }}
+          path: |
+            logs/
+            results/domestic_swing_report_*.json
+          retention-days: 7
+          if-no-files-found: warn

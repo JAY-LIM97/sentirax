@@ -1,0 +1,69 @@
+name: KR Daily Retrain (KOSPI/KOSDAQ)
+
+# 장 시작 전 국내 스캘핑 모델 재학습
+# KST 08:00 = UTC 전일 23:00
+
+on:
+  schedule:
+    # KST 08:00 = UTC 23:00 (전일)
+    - cron: '0 23 * * 0-4'
+  workflow_dispatch:
+
+jobs:
+  kr-retrain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: pip install -r cloud/requirements-cloud.txt
+
+      - name: KR Daily Model Retrain
+        env:
+          HT_API_KEY: ${{ secrets.HT_API_KEY }}
+          HT_API_SECRET_KEY: ${{ secrets.HT_API_SECRET_KEY }}
+          HT_API_FK_KEY: ${{ secrets.HT_API_FK_KEY }}
+          HT_API_FK_SECRET_KEY: ${{ secrets.HT_API_FK_SECRET_KEY }}
+        run: python cloud/run_cloud.py --kr-retrain
+
+      - name: Job Summary
+        if: always()
+        run: |
+          echo "### KR Daily Retrain Results" >> $GITHUB_STEP_SUMMARY
+          if [ -f results/domestic_surge_today.csv ]; then
+            echo "**Domestic Surge Stocks (scan):**" >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+            head -21 results/domestic_surge_today.csv >> $GITHUB_STEP_SUMMARY
+            echo '```' >> $GITHUB_STEP_SUMMARY
+          fi
+          MODEL_COUNT=$(ls models/*_kr_scalping.pkl 2>/dev/null | wc -l)
+          echo "**KR Scalping models trained:** ${MODEL_COUNT}" >> $GITHUB_STEP_SUMMARY
+
+      - name: Save trained models
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kr-models-${{ github.run_number }}
+          path: models/*_kr_scalping.pkl
+          retention-days: 3
+          if-no-files-found: warn
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: kr-retrain-logs-${{ github.run_number }}
+          path: |
+            logs/
+            results/domestic_surge_today.csv
+          retention-days: 7
+          if-no-files-found: warn

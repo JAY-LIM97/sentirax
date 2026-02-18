@@ -10,6 +10,12 @@ Usage:
     python cloud/run_cloud.py --retrain              # 스윙 모델 일일 재학습
     python cloud/run_cloud.py --performance          # 성과 추적 + 모델 자동 교체
     python cloud/run_cloud.py --dashboard            # 대시보드 출력
+
+    # 국내주식 모드
+    python cloud/run_cloud.py --kr-swing             # 국내 스윙 (RSI+MA)
+    python cloud/run_cloud.py --kr-scalping-opening  # 국내 오프닝 서지 + 학습 + 스캘핑
+    python cloud/run_cloud.py --kr-scalping-continuous # 국내 스캘핑 연속 (체크포인트 복원)
+    python cloud/run_cloud.py --kr-retrain           # 국내 스캘핑 모델 일일 재학습
 """
 
 import sys
@@ -79,6 +85,187 @@ def is_us_market_holiday(check_date: date = None) -> bool:
     }
 
     return check_date in holidays
+
+
+def is_kr_market_holiday(check_date: date = None) -> bool:
+    """한국 증시 휴장일 체크 (KOSPI/KOSDAQ) — 토/일 + 공휴일"""
+    if check_date is None:
+        check_date = date.today()
+
+    # 주말은 무조건 휴장
+    if check_date.weekday() >= 5:
+        return True
+
+    # 2025-2026 한국 증시 공휴일
+    holidays = {
+        # 2025
+        date(2025, 1, 1),    # 신정
+        date(2025, 1, 28),   # 설날 연휴
+        date(2025, 1, 29),   # 설날
+        date(2025, 1, 30),   # 설날 연휴
+        date(2025, 3, 1),    # 삼일절
+        date(2025, 5, 5),    # 어린이날
+        date(2025, 5, 6),    # 어린이날 대체
+        date(2025, 6, 6),    # 현충일
+        date(2025, 8, 15),   # 광복절
+        date(2025, 10, 3),   # 개천절
+        date(2025, 10, 6),   # 추석 연휴
+        date(2025, 10, 7),   # 추석
+        date(2025, 10, 8),   # 추석 연휴
+        date(2025, 10, 9),   # 한글날
+        date(2025, 12, 25),  # 성탄절
+        # 2026
+        date(2026, 1, 1),    # 신정
+        date(2026, 2, 16),   # 설날 연휴
+        date(2026, 2, 17),   # 설날
+        date(2026, 2, 18),   # 설날 연휴
+        date(2026, 3, 1),    # 삼일절
+        date(2026, 5, 5),    # 어린이날
+        date(2026, 6, 6),    # 현충일
+        date(2026, 8, 15),   # 광복절
+        date(2026, 9, 24),   # 추석 연휴
+        date(2026, 9, 25),   # 추석
+        date(2026, 9, 26),   # 추석 연휴
+        date(2026, 10, 3),   # 개천절
+        date(2026, 10, 9),   # 한글날
+        date(2026, 12, 25),  # 성탄절
+    }
+
+    return check_date in holidays
+
+
+def run_kr_swing_trading():
+    """국내주식 스윙 봇 (RSI + MA 기반)"""
+    logger.info("=" * 70)
+    logger.info("KR SWING TRADING BOT")
+    logger.info("=" * 70)
+
+    try:
+        from scripts.domestic_swing_bot import DomesticSwingBot
+        bot = DomesticSwingBot(paper_trading=True)
+        bot.run_once(execute=True)
+        logger.info("KR Swing trading completed")
+        return True
+    except Exception as e:
+        logger.error(f"KR Swing trading error: {e}", exc_info=True)
+        return False
+
+
+def run_kr_scalping(continuous: bool = False):
+    """국내주식 스캘핑 봇"""
+    logger.info("=" * 70)
+    logger.info(f"KR SCALPING BOT ({'continuous' if continuous else 'single scan'})")
+    logger.info("=" * 70)
+
+    try:
+        from scripts.domestic_scalping_bot import DomesticScalpingBot
+
+        bot = DomesticScalpingBot(paper_trading=True)
+
+        logger.info("Loading KR scalping models...")
+        models = bot.load_kr_models()
+
+        if not models:
+            logger.warning("No KR scalping models found!")
+            return False
+
+        logger.info(f"Loaded {len(models)} KR models")
+
+        if continuous:
+            duration = int(os.environ.get('SCALPING_DURATION', '120'))
+            bot.run_continuous(models, duration_minutes=duration,
+                               interval_seconds=60, execute=True)
+        else:
+            bot.run_scalping_cycle(models, execute=True)
+
+        logger.info("KR Scalping completed")
+        return True
+
+    except Exception as e:
+        logger.error(f"KR Scalping error: {e}", exc_info=True)
+        return False
+
+
+def run_kr_opening_scan_and_trade():
+    """국내 장 시작 30분 대기 → 오프닝 서지 스캔 → 모델 학습 → 스캘핑"""
+    import time as _time
+    from datetime import datetime, timezone
+
+    logger.info("=" * 70)
+    logger.info("KR OPENING SURGE SCALPING")
+    logger.info("=" * 70)
+
+    results = {}
+
+    # 1. 장 시작(UTC 00:00) + 30분 = UTC 00:30까지 대기
+    now_utc = datetime.now(timezone.utc)
+    market_open_30m = now_utc.replace(hour=0, minute=30, second=0, microsecond=0)
+    # 이미 지났으면 다음 날 00:30이 아닌 즉시 진행
+    if now_utc >= market_open_30m:
+        logger.info(f"Already past KR 30min mark ({now_utc.strftime('%H:%M')} UTC). Proceeding.")
+    else:
+        wait_sec = (market_open_30m - now_utc).total_seconds()
+        logger.info(f"Waiting {wait_sec/60:.1f}min until KR 30min after open (UTC 00:30)...")
+        _time.sleep(wait_sec)
+
+    # 2. 국내 오프닝 서지 스캔
+    logger.info("=" * 70)
+    logger.info("KR OPENING SURGE SCAN")
+    logger.info("=" * 70)
+    try:
+        sys.path.insert(0, os.path.join(PROJECT_ROOT, 'scripts'))
+        from get_domestic_surging_stocks import scan_domestic_surging_stocks
+        top_stocks = scan_domestic_surging_stocks(top_n=20, opening_surge=True)
+
+        if top_stocks is not None and not top_stocks.empty:
+            tickers = top_stocks['api_ticker'].tolist()
+            logger.info(f"KR Opening surge: {len(tickers)} stocks: {tickers}")
+        else:
+            logger.warning("KR Opening surge found no stocks. Using standard scan.")
+            scan_domestic_surging_stocks(top_n=20, opening_surge=False)
+        results['kr_opening_scan'] = True
+    except Exception as e:
+        logger.error(f"KR Opening scan error: {e}", exc_info=True)
+        results['kr_opening_scan'] = False
+
+    # 3. 국내 스캘핑 모델 학습
+    logger.info("=" * 70)
+    logger.info("KR SCALPING MODEL TRAINING")
+    logger.info("=" * 70)
+    try:
+        from train_domestic_scalping_model import main as train_kr_scalping
+        train_kr_scalping()
+        results['kr_model_train'] = True
+        logger.info("KR Scalping model training completed")
+    except Exception as e:
+        logger.error(f"KR Model training error: {e}", exc_info=True)
+        results['kr_model_train'] = False
+
+    # 4. 스캘핑 연속 실행
+    results['kr_scalping'] = run_kr_scalping(continuous=True)
+
+    return results
+
+
+def run_kr_retrain():
+    """국내 스캘핑 모델 일일 재학습 (장 시작 전 최신 데이터 반영)"""
+    logger.info("=" * 70)
+    logger.info("KR SCALPING MODEL DAILY RETRAIN")
+    logger.info("=" * 70)
+
+    try:
+        sys.path.insert(0, os.path.join(PROJECT_ROOT, 'scripts'))
+        from get_domestic_surging_stocks import scan_domestic_surging_stocks
+        scan_domestic_surging_stocks(top_n=20)
+
+        from train_domestic_scalping_model import main as train_kr
+        train_kr()
+
+        logger.info("KR daily retrain completed")
+        return True
+    except Exception as e:
+        logger.error(f"KR retrain error: {e}", exc_info=True)
+        return False
 
 
 def save_daily_report(results: dict, mode: str):
@@ -400,6 +587,11 @@ def main():
     parser.add_argument('--performance', action='store_true', help='Performance tracking + auto-switch')
     parser.add_argument('--dashboard', action='store_true', help='Print dashboard')
     parser.add_argument('--all', action='store_true', help='Swing + scalping single scan')
+    # 국내주식 모드
+    parser.add_argument('--kr-swing', action='store_true', help='KR domestic swing trading')
+    parser.add_argument('--kr-scalping-continuous', action='store_true', help='KR scalping continuous')
+    parser.add_argument('--kr-scalping-opening', action='store_true', help='KR opening surge + train + scalping')
+    parser.add_argument('--kr-retrain', action='store_true', help='KR scalping model daily retrain')
 
     args = parser.parse_args()
 
@@ -409,11 +601,22 @@ def main():
     logger.info(f"Sentirax started at {datetime.now()}")
     logger.info(f"Project: {PROJECT_ROOT}")
 
-    # 미국 휴장일 체크
-    if is_us_market_holiday():
-        logger.info(f"US market is CLOSED today ({date.today()}). Skipping all trading.")
-        write_github_summary({'holiday_skip': True}, 'Holiday')
-        return
+    # 국내 모드 여부 판별
+    kr_mode = any([args.kr_swing, args.kr_scalping_continuous,
+                   args.kr_scalping_opening, args.kr_retrain])
+
+    if kr_mode:
+        # 한국 휴장일 체크
+        if is_kr_market_holiday():
+            logger.info(f"KR market is CLOSED today ({date.today()}). Skipping.")
+            write_github_summary({'holiday_skip': True}, 'KR Holiday')
+            return
+    else:
+        # 미국 휴장일 체크
+        if is_us_market_holiday():
+            logger.info(f"US market is CLOSED today ({date.today()}). Skipping all trading.")
+            write_github_summary({'holiday_skip': True}, 'Holiday')
+            return
 
     # GitHub Actions에서 실행 시 .env 생성
     load_env_from_github()
@@ -448,6 +651,20 @@ def main():
 
     if args.dashboard:
         results['dashboard'] = run_dashboard()
+
+    # 국내주식 모드
+    if args.kr_swing:
+        results['kr_swing'] = run_kr_swing_trading()
+
+    if args.kr_scalping_continuous:
+        results['kr_scalping'] = run_kr_scalping(continuous=True)
+
+    if args.kr_scalping_opening:
+        kr_results = run_kr_opening_scan_and_trade()
+        results.update(kr_results)
+
+    if args.kr_retrain:
+        results['kr_retrain'] = run_kr_retrain()
 
     # 요약
     logger.info("=" * 70)
