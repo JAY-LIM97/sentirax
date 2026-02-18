@@ -134,6 +134,29 @@ def is_kr_market_holiday(check_date: date = None) -> bool:
     return check_date in holidays
 
 
+def get_trading_config() -> tuple[bool, str]:
+    """
+    환경변수에서 거래 모드 + 계좌번호 결정
+
+    GitHub Actions Variables/Secrets:
+      PAPER_TRADING    : "true" (모의) / "false" (실전)  [Variable]
+      PAPER_ACCOUNT_NO : 모의투자 계좌번호               [Secret]
+      REAL_ACCOUNT_NO  : 실전투자 계좌번호               [Secret]
+
+    Returns:
+        (paper_trading: bool, account_no: str)
+    """
+    paper_trading = os.environ.get('PAPER_TRADING', 'true').strip().lower() != 'false'
+    if paper_trading:
+        account_no = os.environ.get('PAPER_ACCOUNT_NO', '50163140')
+    else:
+        account_no = os.environ.get('REAL_ACCOUNT_NO', '72719450')
+
+    mode_str = "모의투자" if paper_trading else "실전투자"
+    logger.info(f"Trading mode: {mode_str} / account: {account_no}")
+    return paper_trading, account_no
+
+
 def run_kr_swing_trading():
     """국내주식 스윙 봇 (RSI + MA 기반)"""
     logger.info("=" * 70)
@@ -141,8 +164,9 @@ def run_kr_swing_trading():
     logger.info("=" * 70)
 
     try:
+        paper_trading, account_no = get_trading_config()
         from scripts.domestic_swing_bot import DomesticSwingBot
-        bot = DomesticSwingBot(paper_trading=True, account_no="50163140")
+        bot = DomesticSwingBot(paper_trading=paper_trading, account_no=account_no)
         bot.run_once(execute=True)
         logger.info("KR Swing trading completed")
         return True
@@ -158,9 +182,10 @@ def run_kr_scalping(continuous: bool = False):
     logger.info("=" * 70)
 
     try:
+        paper_trading, account_no = get_trading_config()
         from scripts.domestic_scalping_bot import DomesticScalpingBot
 
-        bot = DomesticScalpingBot(paper_trading=True, account_no="50163140")
+        bot = DomesticScalpingBot(paper_trading=paper_trading, account_no=account_no)
 
         logger.info("Loading KR scalping models...")
         models = bot.load_kr_models()
@@ -367,7 +392,8 @@ def run_swing_trading():
 
         logger.info(f"Active tickers: {len(tickers)}")
 
-        bot = AutoTradingBot(paper_trading=True, account_no="50163140")
+        paper_trading, account_no = get_trading_config()
+        bot = AutoTradingBot(paper_trading=paper_trading, account_no=account_no)
         bot.run_once(tickers=tickers, execute=True)
 
         # 거래 결과 기록
@@ -394,9 +420,10 @@ def run_scalping(continuous: bool = False):
     logger.info("=" * 70)
 
     try:
+        paper_trading, account_no = get_trading_config()
         from scripts.scalping_bot import ScalpingBot
 
-        bot = ScalpingBot(paper_trading=True, account_no="50163140")
+        bot = ScalpingBot(paper_trading=paper_trading, account_no=account_no)
 
         logger.info("Loading scalping models...")
         models = bot.load_scalping_models()

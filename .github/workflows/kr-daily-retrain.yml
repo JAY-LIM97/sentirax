@@ -33,6 +33,9 @@ jobs:
           HT_API_SECRET_KEY: ${{ secrets.HT_API_SECRET_KEY }}
           HT_API_FK_KEY: ${{ secrets.HT_API_FK_KEY }}
           HT_API_FK_SECRET_KEY: ${{ secrets.HT_API_FK_SECRET_KEY }}
+          PAPER_TRADING: ${{ vars.PAPER_TRADING }}
+          PAPER_ACCOUNT_NO: ${{ secrets.PAPER_ACCOUNT_NO }}
+          REAL_ACCOUNT_NO: ${{ secrets.REAL_ACCOUNT_NO }}
         run: python cloud/run_cloud.py --kr-retrain
 
       - name: Job Summary
