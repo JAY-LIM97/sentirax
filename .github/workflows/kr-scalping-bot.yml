@@ -29,9 +29,11 @@ jobs:
           TARGET_HOUR, TARGET_MIN = 0, 30   # UTC 00:30 = KR 장 시작 30분 후
           now = datetime.now(timezone.utc)
           target = now.replace(hour=TARGET_HOUR, minute=TARGET_MIN, second=0, microsecond=0)
-          # 자정을 넘어가는 경우 다음 날로 설정
           if now >= target:
-              target += timedelta(days=1)
+              elapsed = (now - target).total_seconds()
+              if elapsed > 3 * 3600:  # 3시간 이상 지남 → 저녁 시간대, 다음날 대상
+                  target += timedelta(days=1)
+              # else: 방금 지났으면(지연 실행) → 즉시 진행
           wait_sec = (target - now).total_seconds()
           if wait_sec < 30:
               print(f"Already at/near target ({now.strftime('%H:%M')} UTC)")
