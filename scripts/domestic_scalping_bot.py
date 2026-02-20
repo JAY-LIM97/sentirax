@@ -210,15 +210,17 @@ class DomesticScalpingBot:
         for api_ticker, pos in self.positions.items():
             efr = pos.get('entry_features_raw')
             checkpoint['positions'][api_ticker] = {
-                'entry_price': pos['entry_price'],
-                'quantity': pos['quantity'],
-                'entry_time': pos['entry_time'].isoformat(),
-                'tp': pos['tp'],
-                'sl': pos['sl'],
-                'yf_ticker': pos.get('yf_ticker', ''),
-                'name': pos.get('name', api_ticker),
-                'step': pos.get('step', 2),
+                'entry_price':        pos['entry_price'],
+                'quantity':           pos['quantity'],
+                'entry_time':         pos['entry_time'].isoformat(),
+                'tp':                 pos['tp'],
+                'sl':                 pos['sl'],
+                'yf_ticker':          pos.get('yf_ticker', ''),
+                'name':               pos.get('name', api_ticker),
+                'step':               pos.get('step', 2),
                 'entry_features_raw': efr.tolist() if efr is not None else None,
+                'ol_prob':            pos.get('ol_prob'),
+                'gbm_prob':           pos.get('gbm_prob'),
             }
         for trade in self.trade_log:
             checkpoint['trade_log'].append({
@@ -249,17 +251,19 @@ class DomesticScalpingBot:
             for api_ticker, pos in checkpoint.get('positions', {}).items():
                 efr_list = pos.get('entry_features_raw')
                 self.positions[api_ticker] = {
-                    'entry_price': pos['entry_price'],
-                    'quantity': pos['quantity'],
-                    'entry_time': datetime.fromisoformat(pos['entry_time']),
-                    'tp': pos['tp'],
-                    'sl': pos['sl'],
-                    'yf_ticker': pos.get('yf_ticker', ''),
-                    'name': pos.get('name', api_ticker),
-                    'step': pos.get('step', 2),
+                    'entry_price':        pos['entry_price'],
+                    'quantity':           pos['quantity'],
+                    'entry_time':         datetime.fromisoformat(pos['entry_time']),
+                    'tp':                 pos['tp'],
+                    'sl':                 pos['sl'],
+                    'yf_ticker':          pos.get('yf_ticker', ''),
+                    'name':               pos.get('name', api_ticker),
+                    'step':               pos.get('step', 2),
                     'entry_features_raw': (
                         np.array(efr_list) if efr_list is not None else None
                     ),
+                    'ol_prob':            pos.get('ol_prob'),
+                    'gbm_prob':           pos.get('gbm_prob'),
                 }
             for trade in checkpoint.get('trade_log', []):
                 self.trade_log.append({
@@ -350,12 +354,12 @@ class DomesticScalpingBot:
             gbm_signal = int(gbm_pred)
             gbm_prob = float(gbm_proba[1]) if len(gbm_proba) > 1 else 0.0
 
-        # ── 신호 결합 ─────────────────────────────────────────────────────────
-        ol_w = ol.get_blend_weight() if ol.is_ready() else 0.0
+        # ── 신호 결합 (Variance-Inverted Dynamic Blending) ───────────────────
+        w_ol, w_gbm = ol.get_dynamic_weights() if ol.is_ready() else (0.0, 1.0)
 
         if ol_prob is not None and gbm_prob is not None:
-            buy_prob = ol_prob * ol_w + gbm_prob * (1.0 - ol_w)
-            signal = ol_signal if ol_w >= 0.5 else gbm_signal
+            buy_prob = ol_prob * w_ol + gbm_prob * w_gbm
+            signal = ol_signal if w_ol >= 0.5 else gbm_signal
         elif ol_prob is not None:
             buy_prob = ol_prob
             signal = ol_signal
@@ -382,6 +386,9 @@ class DomesticScalpingBot:
             'signal':             int(signal),
             'buy_prob':           buy_prob,
             'buy_prob_adj':       buy_prob_adj,
+            'ol_prob':            ol_prob,
+            'gbm_prob':           gbm_prob,
+            'w_ol':               w_ol,
             'price':              current_price,
             'price_int':          int(round(current_price)),
             'tp':                 tp,
@@ -389,6 +396,7 @@ class DomesticScalpingBot:
             's1':                 rule['s1'],
             's2':                 rule['s2'],
             's3':                 rule['s3'],
+            's3_src':             rule.get('s3_src'),
             'signal_score':       score,
             'breakdown_risk':     rule['breakdown_risk'],
             'entry_features_raw': entry_features_raw,
@@ -501,10 +509,14 @@ class DomesticScalpingBot:
             'exit_time': datetime.now()
         })
 
-        # ── 온라인 모델 실거래 피드백 ─────────────────────────────────────────
+        # ── 온라인 모델 실거래 피드백 (Variance-Inversion 학습 포함) ─────────
         efr = pos.get('entry_features_raw')
         if efr is not None and self.online_learner.is_ready():
-            self.online_learner.update(efr, pnl_pct, reason)
+            self.online_learner.update(
+                efr, pnl_pct, reason,
+                ol_prob=pos.get('ol_prob'),
+                gbm_prob=pos.get('gbm_prob'),
+            )
 
         notify_trade_close(
             api_ticker, pos['entry_price'], exit_price,
@@ -646,6 +658,9 @@ class DomesticScalpingBot:
                     # Step-1 매수: 전체 자산의 6% (스캘핑60%×10%)
                     buy_qty = self._calc_step_kr_qty(result['price'], 1, config)
 
+                    w_ol_cur = result.get('w_ol', 0.0)
+                    print(f"    Blend: OL={w_ol_cur*100:.0f}% / GBM={100-w_ol_cur*100:.0f}%")
+
                     if execute:
                         order_result = self.api.order_buy_domestic(
                             api_ticker, buy_qty, price=result['price_int'])
@@ -660,6 +675,8 @@ class DomesticScalpingBot:
                                 'name':               result['name'],
                                 'step':               1,
                                 'entry_features_raw': result.get('entry_features_raw'),
+                                'ol_prob':            result.get('ol_prob'),
+                                'gbm_prob':           result.get('gbm_prob'),
                             }
                             print(f"    ORDER PLACED! Step-1 ({buy_qty}주, 6%total)")
                             notify_trade_open(
@@ -680,6 +697,8 @@ class DomesticScalpingBot:
                             'name':               result['name'],
                             'step':               1,
                             'entry_features_raw': result.get('entry_features_raw'),
+                            'ol_prob':            result.get('ol_prob'),
+                            'gbm_prob':           result.get('gbm_prob'),
                         }
                         print(f"    [SIMULATED] ({buy_qty}주)")
                 else:

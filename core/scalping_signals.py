@@ -135,25 +135,21 @@ def create_scalping_features(df: pd.DataFrame) -> pd.DataFrame:
         feat['bullish_engulfing']
     ).astype(int)
 
-    # ── 전략 3: 유동성 채널 패턴 ─────────────────────────────────────────────
-    # 시장장학 캔들: 캔들 범위 > 20봉 평균의 2배
+    # ── 전략 3 (구): 유동성 채널 — 하위호환 피처 유지 ───────────────────────
     candle_range = df['High'] - df['Low']
     avg_range    = candle_range.rolling(20).mean()
     feat['market_maker_candle'] = (candle_range > avg_range * 2.0).astype(int)
 
-    # 수렴 캔들: 현재 범위 < 최근 10봉 최대 범위의 50%
     mm_range_ref            = candle_range.rolling(10).max().shift(1)
     is_conv                 = (candle_range < mm_range_ref * 0.5).astype(int)
     feat['channel_convergence'] = is_conv
-    feat['convergence_count']   = is_conv.rolling(8).sum()  # 8봉 이상 → 채널 확정
+    feat['convergence_count']   = is_conv.rolling(8).sum()
 
-    # 채널 박스 (최근 10봉)
     ch_high = df['High'].rolling(10).max().shift(1)
     ch_low  = df['Low'].rolling(10).min().shift(1)
     feat['channel_breakout_up']       = (df['Close'] > ch_high).astype(int)
     feat['channel_breakout_strength'] = (df['Close'] - ch_high) / (ch_high + 1e-9) * 100
 
-    # 망치형 캔들: 아래꼬리 > 몸통×2 + 위꼬리 < 몸통×0.5 → 거짓 돌파 신호
     body_abs   = (df['Close'] - df['Open']).abs()
     lower_wick = df[['Open', 'Close']].min(axis=1) - df['Low']
     upper_wick = df['High'] - df[['Open', 'Close']].max(axis=1)
@@ -163,16 +159,59 @@ def create_scalping_features(df: pd.DataFrame) -> pd.DataFrame:
         (body_abs > 0)
     ).astype(int)
 
-    # 추세 확인: 최근 5봉 중 고점·저점 모두 4봉 이상 상승
     highs_up = (df['High'] > df['High'].shift(1)).rolling(5).sum() >= 4
     lows_up  = (df['Low']  > df['Low'].shift(1)).rolling(5).sum()  >= 4
     feat['uptrend_5bar'] = (highs_up & lows_up).astype(int)
 
-    # 전략 3 통합 플래그
+    # 구 s3_signal: 하위호환 유지
     feat['s3_signal'] = (
         feat['channel_breakout_up'] &
         feat['uptrend_5bar'] &
-        (feat['hammer_candle'] == 0)  # 거짓 돌파 제외
+        (feat['hammer_candle'] == 0)
+    ).astype(int)
+
+    # ── 전략 3 (신): Liquidity Sweep — 저점 스윕 + 즉시 흡수 ──────────────
+    # Delta Proxy: OHLCV로 매수압력 근사
+    # = ((Close - Low) - (High - Close)) / (High - Low) × Volume
+    hl_range    = df['High'] - df['Low'] + 1e-9
+    delta_proxy = (
+        (df['Close'] - df['Low']) - (df['High'] - df['Close'])
+    ) / hl_range * df['Volume']
+    feat['delta_proxy'] = delta_proxy
+    feat['cvd_10m']     = delta_proxy.rolling(10).sum()  # 10봉 누적 CVD
+
+    # Stop Run: 직전 20봉 저점 스윕 (look-ahead 방지: shift(1))
+    prev_low_20 = df['Low'].rolling(20).min().shift(1)
+    swept       = df['Low'] < prev_low_20
+
+    # Reclaim 1봉: 스윕 동시에 종가 복귀
+    reclaim_1bar = swept & (df['Close'] > prev_low_20)
+    # Reclaim 2봉: 전봉 스윕 + 현봉 종가 복귀
+    reclaim_2bar = swept.shift(1).fillna(False) & (df['Close'] > prev_low_20)
+    feat['sweep_below_low']     = swept.astype(int)
+    feat['reclaim_after_sweep'] = reclaim_1bar.astype(int)
+    feat['reclaim_2bar']        = reclaim_2bar.astype(int)
+
+    # Volume Spike > 2× avg (Stop Run 거래량 확인)
+    avg_vol_20 = df['Volume'].rolling(20).mean()
+    feat['volume_spike_2x'] = (df['Volume'] > avg_vol_20 * 2).astype(int)
+
+    # Absorption Candle: 아래 꼬리 > 몸통 (저가 스윕 후 매수세 흡수)
+    feat['absorption_candle'] = (lower_wick > body_abs).astype(int)
+
+    # RSI Bullish Divergence: 가격 신저점 + RSI 고저점 (5봉)
+    price_lower_low = df['Low'] < df['Low'].rolling(5).min().shift(1)
+    rsi_higher_low  = feat['rsi_14m'] > feat['rsi_14m'].rolling(5).min().shift(1)
+    feat['rsi_bullish_div'] = (price_lower_low & rsi_higher_low).astype(int)
+
+    # S3 Liquidity Sweep 통합 플래그
+    # 필수: (1봉 or 2봉 회복) + 거래량 스파이크 + 흡수 캔들
+    # 보조: RSI 다이버전스 OR CVD 양수 (둘 중 하나)
+    feat['s3_liq_signal'] = (
+        (reclaim_1bar | reclaim_2bar) &
+        feat['volume_spike_2x'].astype(bool) &
+        feat['absorption_candle'].astype(bool) &
+        (feat['rsi_bullish_div'].astype(bool) | (feat['cvd_10m'] > 0))
     ).astype(int)
 
     return feat
@@ -212,13 +251,26 @@ def compute_rule_signals(df: pd.DataFrame) -> dict:
 
         s1 = bool(latest.get('box_breakout_5m', 0))
         s2 = bool(latest.get('s2_signal', 0))
-        s3 = bool(latest.get('s3_signal', 0))
+
+        # S3: Liquidity Sweep 신호 우선, 없으면 구 채널 신호 폴백
+        # (2봉 회복 여부는 최신 봉 데이터로 직접 체크)
+        s3_liq = bool(latest.get('s3_liq_signal', 0))
+        s3_old = bool(latest.get('s3_signal', 0))
+        s3 = s3_liq or s3_old
         score = int(s1) + int(s2) + int(s3)
 
+        # S3 디버그 정보
+        if s3:
+            s3_src = 'LIQ' if s3_liq else 'CH'
+        else:
+            s3_src = None
+
         # 거짓 돌파 위험: 망치형이면서 채널 상향 돌파인 경우
+        # Liquidity Sweep S3는 absorption_candle로 걸러지므로 제외
         breakdown_risk = (
             bool(latest.get('hammer_candle', 0)) and
-            bool(latest.get('channel_breakout_up', 0))
+            bool(latest.get('channel_breakout_up', 0)) and
+            not s3_liq   # liq 스윕 신호가 있으면 hammer를 false break로 보지 않음
         )
 
         # ── 동적 TP/SL (ATR + 캔들 저점 기반) ──────────────────────────────
@@ -249,10 +301,15 @@ def compute_rule_signals(df: pd.DataFrame) -> dict:
             's1': s1,
             's2': s2,
             's3': s3,
+            's3_src': s3_src,          # 'LIQ' | 'CH' | None
             'signal_score': score,
             'dynamic_tp': round(tp_pct, 2),
             'dynamic_sl': round(sl_pct, 2),
             'breakdown_risk': breakdown_risk,
+            # Liquidity Sweep 세부 정보
+            'cvd_positive': float(latest.get('cvd_10m', 0)) > 0,
+            'rsi_div':      bool(latest.get('rsi_bullish_div', 0)),
+            'absorption':   bool(latest.get('absorption_candle', 0)),
         }
 
     except Exception:
