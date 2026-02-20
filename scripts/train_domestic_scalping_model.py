@@ -28,6 +28,7 @@ from sklearn.metrics import accuracy_score, f1_score
 
 # 공유 Feature Engineering (core/scalping_signals.py)
 from core.scalping_signals import create_scalping_features
+from core.slack_notifier import notify_retrain_complete
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -257,6 +258,10 @@ def main():
                   f"{r['avg_return']:>+7.2f}% {mark:>5}")
     else:
         print("  저장된 모델 없음")
+
+    # 재학습 완료 Slack 알림
+    if all_results:
+        notify_retrain_complete(all_results, market="KR")
 
 
 if __name__ == '__main__':

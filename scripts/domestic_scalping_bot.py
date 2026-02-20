@@ -22,10 +22,13 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
 import yfinance as yf
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from core.kis_trading_api import KISTradingAPI
 from core.scalping_signals import create_scalping_features, compute_rule_signals
+from core.slack_notifier import (
+    notify_trade_open, notify_trade_close, notify_daily_summary,
+)
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -137,28 +140,55 @@ class DomesticScalpingBot:
 
         return 0.0
 
-    def _calc_kr_qty(self, price: float, buy_prob: float, config: dict) -> int:
-        """국내 스캘핑 매수 수량 계산 (KRW 기반)"""
+    def _calc_step_kr_qty(self, price: float, step: int, config: dict) -> int:
+        """
+        2단계 진입 수량 계산 (KRW, 종목당 최대 전체 자산 12%)
+          step 1: 스캘핑 자산(60%) × 10% = 전체 자산의 6%
+          step 2: 동일 (수익 1% 이상일 때만 허용)
+        """
         alloc = config.get('allocation', {})
-        scalping_pct = alloc.get('scalping_pct', 0.70)
-        per_trade_pct = alloc.get('scalping_per_trade_pct', 0.40)
-        strong_threshold = alloc.get('strong_signal_threshold', 0.70)
-        strong_pct = alloc.get('strong_signal_scalping_pct', 0.60)
-
-        if buy_prob >= strong_threshold:
-            per_trade_pct = min(strong_pct, 1.0)
+        scalping_pct = alloc.get('scalping_pct', 0.60)
+        step_pct = alloc.get('scalping_step_pct', 0.10)
 
         total_krw = self._get_total_balance_krw(config)
-
         if total_krw > 0 and price > 0:
-            budget = total_krw * scalping_pct * per_trade_pct
+            budget = total_krw * scalping_pct * step_pct
             qty = max(1, int(budget / price))
-            label = "강한" if buy_prob >= strong_threshold else "기본"
-            print(f"    [{label}신호] {total_krw:,.0f}원×{scalping_pct:.0%}×{per_trade_pct:.0%}"
-                  f"/{price:,.0f}원 = {qty}주")
+            eff_pct = scalping_pct * step_pct * 100
+            print(f"    [Step{step}] {total_krw:,.0f}원×{scalping_pct:.0%}×{step_pct:.0%}"
+                  f"(={eff_pct:.0f}%total)/{price:,.0f}원 = {qty}주")
             return qty
-
         return config.get('domestic_scalping', {}).get('order_quantity', 1)
+
+    def _calc_kr_qty(self, price: float, _buy_prob: float, config: dict) -> int:
+        """레거시 호출용 (step1 수량 반환)"""
+        return self._calc_step_kr_qty(price, 1, config)
+
+    def _select_top_volume_kr_tickers(self, models: dict, max_n: int = 5) -> dict:
+        """
+        실시간 거래량 기준 상위 N개 국내 종목 선정 (다이나믹 스캐너)
+        yfinance fast_info 기반으로 빠르게 거래량 비율 계산
+        """
+        volume_scores: dict[str, float] = {}
+        for api_ticker, model_data in models.items():
+            yf_ticker = model_data.get('yf_ticker', api_ticker + '.KS')
+            try:
+                fi = yf.Ticker(yf_ticker).fast_info
+                today_vol = getattr(fi, 'last_volume', None) or 0
+                avg_vol = getattr(fi, 'three_month_average_volume', None) or today_vol or 1
+                volume_scores[api_ticker] = today_vol / avg_vol if avg_vol > 0 else 0.0
+            except Exception:
+                volume_scores[api_ticker] = 0.0
+
+        sorted_tickers = sorted(volume_scores, key=lambda t: volume_scores[t], reverse=True)
+        top = sorted_tickers[:max_n]
+
+        print(f"\n  [볼륨 스캐너] 상위 {max_n}개 타겟 (전체 {len(models)}개 중):")
+        for i, t in enumerate(top):
+            name = models[t].get('name', t) if t in models else t
+            print(f"    {i+1}. {t}({name}): ×{volume_scores.get(t, 0):.2f}")
+
+        return {t: models[t] for t in top if t in models}
 
     def _save_checkpoint(self):
         checkpoint = {
@@ -174,7 +204,8 @@ class DomesticScalpingBot:
                 'tp': pos['tp'],
                 'sl': pos['sl'],
                 'yf_ticker': pos.get('yf_ticker', ''),
-                'name': pos.get('name', api_ticker)
+                'name': pos.get('name', api_ticker),
+                'step': pos.get('step', 2),
             }
         for trade in self.trade_log:
             checkpoint['trade_log'].append({
@@ -210,7 +241,8 @@ class DomesticScalpingBot:
                     'tp': pos['tp'],
                     'sl': pos['sl'],
                     'yf_ticker': pos.get('yf_ticker', ''),
-                    'name': pos.get('name', api_ticker)
+                    'name': pos.get('name', api_ticker),
+                    'step': pos.get('step', 2),
                 }
             for trade in checkpoint.get('trade_log', []):
                 self.trade_log.append({
@@ -322,8 +354,12 @@ class DomesticScalpingBot:
             'time':          datetime.now()
         }
 
-    def check_positions(self):
-        """보유 포지션 TP/SL 체크"""
+    def check_positions(self, execute: bool = True):
+        """보유 포지션 TP/SL + Step-2 추가매수 체크"""
+        config = load_strategy_config()
+        alloc = config.get('allocation', {})
+        step2_min_profit = alloc.get('scalping_step2_min_profit_pct', 1.0)
+
         closed = []
 
         for api_ticker, pos in self.positions.items():
@@ -334,23 +370,45 @@ class DomesticScalpingBot:
                     continue
 
                 current_price = float(df['Close'].iloc[-1])
+                current_price_int = int(round(current_price))
                 pnl_pct = (current_price / pos['entry_price'] - 1) * 100
                 hold_min = (datetime.now() - pos['entry_time']).total_seconds() / 60
 
                 if pnl_pct >= pos['tp']:
                     print(f"  TP HIT {api_ticker}({pos.get('name','')}): +{pnl_pct:.2f}%")
-                    self._close_position(api_ticker, int(round(current_price)), 'TP')
+                    self._close_position(api_ticker, current_price_int, 'TP')
                     closed.append(api_ticker)
                 elif pnl_pct <= -pos['sl']:
                     print(f"  SL HIT {api_ticker}({pos.get('name','')}): {pnl_pct:.2f}%")
-                    self._close_position(api_ticker, int(round(current_price)), 'SL')
+                    self._close_position(api_ticker, current_price_int, 'SL')
                     closed.append(api_ticker)
                 elif hold_min >= 60:
                     print(f"  TIMEOUT {api_ticker}: {pnl_pct:+.2f}% ({hold_min:.0f}분)")
-                    self._close_position(api_ticker, int(round(current_price)), 'TIMEOUT')
+                    self._close_position(api_ticker, current_price_int, 'TIMEOUT')
                     closed.append(api_ticker)
+                elif pos.get('step', 2) == 1 and pnl_pct >= step2_min_profit:
+                    # Step-2 추가매수 (수익 1% 이상 + 1차 매수 상태)
+                    add_qty = self._calc_step_kr_qty(current_price, 2, config)
+                    print(f"  STEP-2 ADD {api_ticker}: +{pnl_pct:.2f}% → +{add_qty}주 추가")
+                    order_ok = True
+                    if execute:
+                        order_result = self.api.order_buy_domestic(
+                            api_ticker, add_qty, price=current_price_int)
+                        order_ok = bool(order_result)
+                    if order_ok:
+                        total_qty = pos['quantity'] + add_qty
+                        avg_price = (pos['entry_price'] * pos['quantity'] +
+                                     current_price * add_qty) / total_qty
+                        self.positions[api_ticker]['quantity'] = total_qty
+                        self.positions[api_ticker]['entry_price'] = avg_price
+                        self.positions[api_ticker]['step'] = 2
+                        print(f"    avg={avg_price:,.0f}원, total={total_qty}주 (12%까지 사용)")
+                    else:
+                        print(f"    Step-2 주문 실패")
                 else:
-                    print(f"  HOLD {api_ticker}: {pnl_pct:+.2f}% ({hold_min:.0f}분)")
+                    step_txt = f"[S{pos.get('step',2)}]" if pos.get('step', 2) == 1 else ""
+                    print(f"  HOLD {api_ticker}({pos.get('name','')}){step_txt}: "
+                          f"{pnl_pct:+.2f}% ({hold_min:.0f}분)")
 
             except Exception as e:
                 print(f"  포지션 체크 오류 {api_ticker}: {e}")
@@ -361,6 +419,8 @@ class DomesticScalpingBot:
     def _close_position(self, api_ticker: str, exit_price: int, reason: str):
         pos = self.positions[api_ticker]
         pnl_pct = (exit_price / pos['entry_price'] - 1) * 100
+        hold_min = (datetime.now() - pos['entry_time']).total_seconds() / 60
+
         self.api.order_sell_domestic(api_ticker, pos['quantity'], price=exit_price)
         self.trade_log.append({
             'api_ticker': api_ticker,
@@ -373,6 +433,31 @@ class DomesticScalpingBot:
             'exit_time': datetime.now()
         })
         print(f"  CLOSED {api_ticker}: {pnl_pct:+.2f}% ({reason})")
+        notify_trade_close(
+            api_ticker, pos['entry_price'], exit_price,
+            pnl_pct, reason, hold_min,
+            market="KR", paper_trading=self.paper_trading,
+        )
+
+    def _force_close_all(self, reason: str = 'MARKET_CLOSE'):
+        """장 마감 전 모든 포지션 시장가 강제 청산 (오버나잇 리스크 제거)"""
+        if not self.positions:
+            print(f"  [{reason}] 청산할 포지션 없음")
+            return
+        print(f"\n{'='*70}")
+        print(f"  [{reason}] 전체 {len(self.positions)}개 포지션 강제 청산 중...")
+        print(f"{'='*70}")
+        for api_ticker in list(self.positions.keys()):
+            try:
+                pos = self.positions[api_ticker]
+                yf_ticker = pos.get('yf_ticker', api_ticker + '.KS')
+                df = yf.Ticker(yf_ticker).history(period='1d', interval='1m')
+                price = int(round(float(df['Close'].iloc[-1]))) if not df.empty \
+                    else pos['entry_price']
+                self._close_position(api_ticker, price, reason)
+            except Exception as e:
+                print(f"  {api_ticker} 강제 청산 오류: {e}")
+        self.positions.clear()
 
     def run_scalping_cycle(self, models: dict, execute: bool = False):
         """스캘핑 1사이클 실행"""
@@ -413,13 +498,16 @@ class DomesticScalpingBot:
 
         if self.positions:
             print(f"\n  [포지션 점검]")
-            self.check_positions()
+            self.check_positions(execute=execute)
 
         if len(self.positions) < max_positions:
             print(f"\n  [매수 신호 탐색]")
-            scan_models = models
             if only_tickers:
                 scan_models = {k: v for k, v in models.items() if k in only_tickers}
+            else:
+                # 볼륨 기반 상위 N개 다이나믹 선정
+                max_targets = config.get('allocation', {}).get('scalping_max_volume_targets', max_positions)
+                scan_models = self._select_top_volume_kr_tickers(models, max_n=max_targets)
 
             for api_ticker, model_data in scan_models.items():
                 if api_ticker in self.positions or api_ticker in disabled:
@@ -482,7 +570,8 @@ class DomesticScalpingBot:
                     print(f"    ML확률: {prob*100:.1f}% → 보정: {prob_adj*100:.1f}%")
                     print(f"    TP: +{result['tp']}%, SL: -{result['sl']}%")
 
-                    buy_qty = self._calc_kr_qty(result['price'], prob_adj, config)
+                    # Step-1 매수: 전체 자산의 6% (스캘핑60%×10%)
+                    buy_qty = self._calc_step_kr_qty(result['price'], 1, config)
 
                     if execute:
                         order_result = self.api.order_buy_domestic(
@@ -495,9 +584,15 @@ class DomesticScalpingBot:
                                 'tp':          result['tp'],
                                 'sl':          result['sl'],
                                 'yf_ticker':   result['yf_ticker'],
-                                'name':        result['name']
+                                'name':        result['name'],
+                                'step':        1,
                             }
-                            print(f"    ORDER PLACED! ({buy_qty}주)")
+                            print(f"    ORDER PLACED! Step-1 ({buy_qty}주, 6%total)")
+                            notify_trade_open(
+                                api_ticker, result['price_int'], buy_qty,
+                                result['tp'], result['sl'], tags,
+                                market="KR", paper_trading=self.paper_trading,
+                            )
                         else:
                             print(f"    ORDER FAILED")
                     else:
@@ -508,7 +603,8 @@ class DomesticScalpingBot:
                             'tp':          result['tp'],
                             'sl':          result['sl'],
                             'yf_ticker':   result['yf_ticker'],
-                            'name':        result['name']
+                            'name':        result['name'],
+                            'step':        1,
                         }
                         print(f"    [SIMULATED] ({buy_qty}주)")
                 else:
@@ -532,9 +628,23 @@ class DomesticScalpingBot:
 
         self._save_checkpoint()
 
+        # KR 마감 강제 청산 기준: 15:30 KST = 06:30 UTC → 10분 전 = 06:20 UTC
+        KR_FORCE_CLOSE_HOUR = 6
+        KR_FORCE_CLOSE_MIN = 20
+
         try:
             while datetime.now() < end_time:
                 cycle += 1
+
+                # 장 마감 10분 전 강제 청산 (오버나잇 리스크 제거)
+                now_utc = datetime.now(timezone.utc)
+                if (now_utc.hour > KR_FORCE_CLOSE_HOUR or
+                        (now_utc.hour == KR_FORCE_CLOSE_HOUR and
+                         now_utc.minute >= KR_FORCE_CLOSE_MIN)):
+                    print(f"\n  [MARKET CLOSE] UTC {now_utc.strftime('%H:%M')} - 마감 10분 전 전체 청산")
+                    self._force_close_all('MARKET_CLOSE')
+                    break
+
                 live_config = load_strategy_config()
                 risk_cfg = live_config.get('risk', {})
 
@@ -572,6 +682,10 @@ class DomesticScalpingBot:
         self._print_summary()
         self._save_checkpoint()
         self._save_daily_summary()
+        notify_daily_summary(
+            self.trade_log, self.positions,
+            market="KR", paper_trading=self.paper_trading,
+        )
 
     def _print_summary(self):
         print(f"\n\n{'='*70}")

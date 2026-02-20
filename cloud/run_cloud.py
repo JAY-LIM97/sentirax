@@ -376,6 +376,29 @@ def load_env_from_github():
         logger.info(f"Created .env from environment variables ({len(lines)} keys)")
 
 
+def _ensure_swing_models_exist(tickers: list):
+    """모델이 없는 스윙 종목 자동 학습 (신규 종목 즉시 대응)"""
+    models_dir = os.path.join(PROJECT_ROOT, 'models')
+    missing = [
+        t for t in tickers
+        if not os.path.exists(os.path.join(models_dir, f'{t.lower()}_top20_500d.pkl'))
+    ]
+    if not missing:
+        logger.info(f"All {len(tickers)} swing models present")
+        return
+    logger.info(f"Missing swing models for {len(missing)} tickers: {missing}")
+    logger.info("Auto-training missing models...")
+    try:
+        from core.model_manager import SwingModelRetrainer
+        retrainer = SwingModelRetrainer(PROJECT_ROOT)
+        for ticker in missing:
+            result = retrainer.retrain_single(ticker)
+            status = 'OK' if result.get('success') else f"FAILED({result.get('reason', '')})"
+            logger.info(f"  Auto-train {ticker}: {status}")
+    except Exception as e:
+        logger.error(f"Auto swing model train error: {e}", exc_info=True)
+
+
 def run_swing_trading():
     """스윙 트레이딩 봇 (헤드리스)"""
     logger.info("=" * 70)
@@ -389,6 +412,9 @@ def run_swing_trading():
 
         from scripts.auto_trading_bot import AutoTradingBot, TOP20_TICKERS
         tickers = active_tickers if active_tickers else TOP20_TICKERS
+
+        # 모델 없는 종목 자동 학습
+        _ensure_swing_models_exist(tickers)
 
         logger.info(f"Active tickers: {len(tickers)}")
 

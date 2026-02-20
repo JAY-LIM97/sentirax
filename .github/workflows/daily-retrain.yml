@@ -1,14 +1,44 @@
 name: Daily Model Retrain + Performance
 
+# [GitHub Actions 지연 대응] cron을 3시간 앞당겨 실행
+# standby job이 UTC 13:00(원래 실행 시간)까지 대기
+
 on:
   schedule:
-    # KST 22:07 = UTC 13:07 (:00 혼잡 회피)
-    - cron: '7 13 * * 1-5'
+    # 3시간 선행: KST 19:07 = UTC 10:07 (원래 KST 22:07)
+    - cron: '7 10 * * 1-5'
   workflow_dispatch:
 
 jobs:
+  # Standby: UTC 13:00까지 대기 (최대 3시간)
+  standby:
+    runs-on: ubuntu-latest
+    timeout-minutes: 200
+    steps:
+      - name: Standby until retrain time (UTC 13:00)
+        run: |
+          python3 << 'EOF'
+          import time
+          from datetime import datetime, timezone
+
+          TARGET_HOUR, TARGET_MIN = 13, 0
+          now = datetime.now(timezone.utc)
+          target = now.replace(hour=TARGET_HOUR, minute=TARGET_MIN, second=0, microsecond=0)
+          if now >= target:
+              print(f"Already at/past target ({now.strftime('%H:%M')} UTC)")
+          else:
+              wait_sec = (target - now).total_seconds()
+              print(f"[Standby] {wait_sec/60:.0f} min until UTC {TARGET_HOUR:02d}:{TARGET_MIN:02d}...")
+              while datetime.now(timezone.utc) < target:
+                  remaining = (target - datetime.now(timezone.utc)).total_seconds()
+                  print(f"  Remaining: {remaining/60:.0f} min")
+                  time.sleep(min(300, max(remaining, 1)))
+          print(f"[Standby] Done at {datetime.now(timezone.utc).strftime('%H:%M')} UTC")
+          EOF
+
   retrain:
     runs-on: ubuntu-latest
+    needs: standby
     timeout-minutes: 60
 
     steps:
@@ -33,6 +63,7 @@ jobs:
           PAPER_TRADING: ${{ vars.PAPER_TRADING }}
           PAPER_ACCOUNT_NO: ${{ secrets.PAPER_ACCOUNT_NO }}
           REAL_ACCOUNT_NO: ${{ secrets.REAL_ACCOUNT_NO }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: python cloud/run_cloud.py --performance
 
       - name: Retrain swing models with latest data
@@ -44,6 +75,7 @@ jobs:
           PAPER_TRADING: ${{ vars.PAPER_TRADING }}
           PAPER_ACCOUNT_NO: ${{ secrets.PAPER_ACCOUNT_NO }}
           REAL_ACCOUNT_NO: ${{ secrets.REAL_ACCOUNT_NO }}
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
         run: python cloud/run_cloud.py --retrain
 
       - name: Commit updated models

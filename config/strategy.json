@@ -51,14 +51,16 @@
   },
 
   "allocation": {
-    "_comment": "30:70 비율은 항상 유지. 강한 신호(확률≥threshold)시 per_trade 비율 자동 상향",
-    "swing_pct": 0.30,
-    "scalping_pct": 0.70,
-    "swing_per_trade_pct": 0.30,
-    "scalping_per_trade_pct": 0.40,
+    "_comment": "Swing 25% / Scalping 60% / Cash Buffer 15%. 현금 15%는 절대 사용 금지(수수료·슬리피지 대비)",
+    "swing_pct": 0.25,
+    "scalping_pct": 0.60,
+    "cash_buffer_pct": 0.15,
+    "swing_per_trade_pct": 0.20,
+    "scalping_step_pct": 0.10,
+    "scalping_step2_min_profit_pct": 1.0,
+    "scalping_max_volume_targets": 5,
     "strong_signal_threshold": 0.70,
-    "strong_signal_scalping_pct": 0.60,
-    "strong_signal_swing_pct": 0.50,
+    "strong_signal_swing_pct": 0.40,
     "account_balance_usd": 200000,
     "account_balance_krw": 30000000
   },

@@ -23,10 +23,13 @@ sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
 import yfinance as yf
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from core.kis_trading_api import KISTradingAPI
 from core.scalping_signals import create_scalping_features, compute_rule_signals
+from core.slack_notifier import (
+    notify_trade_open, notify_trade_close, notify_daily_summary,
+)
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -150,7 +153,8 @@ class ScalpingBot:
                 'quantity': pos['quantity'],
                 'entry_time': pos['entry_time'].isoformat(),
                 'tp': pos['tp'],
-                'sl': pos['sl']
+                'sl': pos['sl'],
+                'step': pos.get('step', 2),
             }
         for trade in self.trade_log:
             checkpoint['trade_log'].append({
@@ -185,7 +189,8 @@ class ScalpingBot:
                     'quantity': pos['quantity'],
                     'entry_time': datetime.fromisoformat(pos['entry_time']),
                     'tp': pos['tp'],
-                    'sl': pos['sl']
+                    'sl': pos['sl'],
+                    'step': pos.get('step', 2),
                 }
             for trade in checkpoint.get('trade_log', []):
                 self.trade_log.append({
@@ -224,28 +229,55 @@ class ScalpingBot:
 
         return 0.0
 
-    def _calc_scalping_qty(self, price: float, buy_prob: float, config: dict) -> int:
-        """스캘핑 매수 수량 계산 (잔고 × 배분 비율 기반)"""
+    def _calc_step_qty(self, price: float, step: int, config: dict) -> int:
+        """
+        2단계 진입 수량 계산 (종목당 최대 전체 자산 12%)
+          step 1: 스캘핑 자산(60%) × 10% = 전체 자산의 6%
+          step 2: 동일 (수익 1% 이상일 때만 허용)
+        """
         alloc = config.get('allocation', {})
-        scalping_pct = alloc.get('scalping_pct', 0.70)
-        per_trade_pct = alloc.get('scalping_per_trade_pct', 0.40)
-        strong_threshold = alloc.get('strong_signal_threshold', 0.70)
-        strong_pct = alloc.get('strong_signal_scalping_pct', 0.60)
-
-        # 강한 신호 → per_trade 비율 자동 상향
-        if buy_prob >= strong_threshold:
-            per_trade_pct = min(strong_pct, 1.0)
+        scalping_pct = alloc.get('scalping_pct', 0.60)
+        step_pct = alloc.get('scalping_step_pct', 0.10)
 
         total_usd = self._get_total_balance_usd(config)
-
         if total_usd > 0 and price > 0:
-            budget = total_usd * scalping_pct * per_trade_pct
+            budget = total_usd * scalping_pct * step_pct
             qty = max(1, int(budget / price))
-            label = "강한" if buy_prob >= strong_threshold else "기본"
-            print(f"    [{label}신호] ${total_usd:,.0f}×{scalping_pct:.0%}×{per_trade_pct:.0%}/${price:.2f} = {qty}주")
+            eff_pct = scalping_pct * step_pct * 100
+            print(f"    [Step{step}] ${total_usd:,.0f}×{scalping_pct:.0%}×{step_pct:.0%}"
+                  f"(={eff_pct:.0f}%total)/${price:.2f} = {qty}주")
             return qty
-
         return config.get('scalping', {}).get('order_quantity', 1)
+
+    def _calc_scalping_qty(self, price: float, _buy_prob: float, config: dict) -> int:
+        """강제매수 등 레거시 호출용 (step1 수량 반환)"""
+        return self._calc_step_qty(price, 1, config)
+
+    def _select_top_volume_tickers(self, models: dict, max_n: int = 5) -> dict:
+        """
+        실시간 거래량 기준 상위 N개 종목 선정 (다이나믹 스캐너)
+        fast_info.last_volume ÷ three_month_average_volume 비율 기준 정렬
+        거래량 급감 종목은 자동 제외, 대기 종목으로 교체
+        """
+        volume_scores: dict[str, float] = {}
+        for ticker in models:
+            try:
+                stock = yf.Ticker(ticker)
+                fi = stock.fast_info
+                today_vol = getattr(fi, 'last_volume', None) or 0
+                avg_vol = getattr(fi, 'three_month_average_volume', None) or today_vol or 1
+                volume_scores[ticker] = today_vol / avg_vol if avg_vol > 0 else 0.0
+            except Exception:
+                volume_scores[ticker] = 0.0
+
+        sorted_tickers = sorted(volume_scores, key=lambda t: volume_scores[t], reverse=True)
+        top = sorted_tickers[:max_n]
+
+        print(f"\n  [Volume Scanner] Top {max_n} targets (of {len(models)}):")
+        for i, t in enumerate(top):
+            print(f"    {i+1}. {t}: ×{volume_scores.get(t, 0):.2f}")
+
+        return {t: models[t] for t in top if t in models}
 
     def _save_daily_summary(self):
         """일일 스캘핑 요약 저장"""
@@ -343,8 +375,12 @@ class ScalpingBot:
             'time':          datetime.now()
         }
 
-    def check_positions(self):
-        """보유 포지션 TP/SL 체크"""
+    def check_positions(self, execute: bool = True):
+        """보유 포지션 TP/SL + Step-2 추가매수 체크"""
+
+        config = load_strategy_config()
+        alloc = config.get('allocation', {})
+        step2_min_profit = alloc.get('scalping_step2_min_profit_pct', 1.0)
 
         closed_tickers = []
 
@@ -355,7 +391,7 @@ class ScalpingBot:
                 if df.empty:
                     continue
 
-                current_price = df['Close'].iloc[-1]
+                current_price = float(df['Close'].iloc[-1])
                 pnl_pct = (current_price / pos['entry_price'] - 1) * 100
                 hold_minutes = (datetime.now() - pos['entry_time']).total_seconds() / 60
 
@@ -375,8 +411,28 @@ class ScalpingBot:
                     self._close_position(ticker, current_price, 'TIMEOUT')
                     closed_tickers.append(ticker)
 
+                elif pos.get('step', 2) == 1 and pnl_pct >= step2_min_profit:
+                    # Step-2 추가매수 (수익 1% 이상 + 아직 1차 매수만 한 상태)
+                    add_qty = self._calc_step_qty(current_price, 2, config)
+                    print(f"  STEP-2 ADD {ticker}: +{pnl_pct:.2f}% >= {step2_min_profit}% → +{add_qty}주")
+                    order_ok = True
+                    if execute:
+                        order_result = self.api.order_buy(ticker, add_qty, price=current_price)
+                        order_ok = bool(order_result)
+                    if order_ok:
+                        total_qty = pos['quantity'] + add_qty
+                        avg_price = (pos['entry_price'] * pos['quantity'] +
+                                     current_price * add_qty) / total_qty
+                        self.positions[ticker]['quantity'] = total_qty
+                        self.positions[ticker]['entry_price'] = avg_price
+                        self.positions[ticker]['step'] = 2
+                        print(f"    avg=${avg_price:.2f}, total={total_qty}주 (12%까지 사용)")
+                    else:
+                        print(f"    Step-2 주문 실패")
+
                 else:
-                    print(f"  HOLD {ticker}: {pnl_pct:+.2f}% ({hold_minutes:.0f}min)")
+                    step_txt = f"[S{pos.get('step',2)}]" if pos.get('step',2) == 1 else ""
+                    print(f"  HOLD {ticker}{step_txt}: {pnl_pct:+.2f}% ({hold_minutes:.0f}min)")
 
             except Exception as e:
                 print(f"  Error checking {ticker}: {e}")
@@ -388,8 +444,8 @@ class ScalpingBot:
         """포지션 종료 (매도)"""
         pos = self.positions[ticker]
         pnl_pct = (exit_price / pos['entry_price'] - 1) * 100
+        hold_min = (datetime.now() - pos['entry_time']).total_seconds() / 60
 
-        # 매도 주문 (현재가 기준 지정가 — 모의/실전 공통)
         self.api.order_sell(ticker, pos['quantity'], price=exit_price)
 
         self.trade_log.append({
@@ -403,6 +459,28 @@ class ScalpingBot:
         })
 
         print(f"  CLOSED {ticker}: {pnl_pct:+.2f}% ({reason})")
+        notify_trade_close(
+            ticker, pos['entry_price'], exit_price,
+            pnl_pct, reason, hold_min,
+            market="US", paper_trading=self.paper_trading,
+        )
+
+    def _force_close_all(self, reason: str = 'MARKET_CLOSE'):
+        """장 마감 전 모든 포지션 시장가 강제 청산"""
+        if not self.positions:
+            print(f"  [{reason}] 청산할 포지션 없음")
+            return
+        print(f"\n{'='*70}")
+        print(f"  [{reason}] 전체 {len(self.positions)}개 포지션 강제 청산 중...")
+        print(f"{'='*70}")
+        for ticker in list(self.positions.keys()):
+            try:
+                df = yf.Ticker(ticker).history(period='1d', interval='1m')
+                price = float(df['Close'].iloc[-1]) if not df.empty else self.positions[ticker]['entry_price']
+                self._close_position(ticker, price, reason)
+            except Exception as e:
+                print(f"  {ticker} 강제 청산 오류: {e}")
+        self.positions.clear()
 
     def run_scalping_cycle(self, models: dict, max_positions: int = 5, execute: bool = False):
         """
@@ -459,19 +537,22 @@ class ScalpingBot:
                 self.check_positions()
             return
 
-        # 1. 보유 포지션 체크
+        # 1. 보유 포지션 체크 (TP/SL + Step-2)
         if self.positions:
             print(f"\n  [Position Check]")
-            self.check_positions()
+            self.check_positions(execute=execute)
 
         # 2. 새 매수 신호 탐색
         if len(self.positions) < max_positions:
             print(f"\n  [Scanning for entries]")
 
             # 대상 모델 필터링
-            scan_models = models
             if only_tickers:
                 scan_models = {k: v for k, v in models.items() if k in only_tickers}
+            else:
+                # 볼륨 기반 상위 N개 다이나믹 선정
+                max_targets = config.get('allocation', {}).get('scalping_max_volume_targets', max_positions)
+                scan_models = self._select_top_volume_tickers(models, max_n=max_targets)
 
             for ticker, model_data in scan_models.items():
                 if ticker in self.positions:
@@ -541,7 +622,8 @@ class ScalpingBot:
                     print(f"    ML prob: {prob*100:.1f}% → adj: {prob_adj*100:.1f}%")
                     print(f"    TP: +{result['tp']}%, SL: -{result['sl']}%")
 
-                    buy_qty = self._calc_scalping_qty(result['price'], prob_adj, config)
+                    # Step-1 매수: 전체 자산의 6% (스캘핑60%×10%)
+                    buy_qty = self._calc_step_qty(result['price'], 1, config)
 
                     if execute:
                         order_result = self.api.order_buy(ticker, buy_qty, price=result['price'])
@@ -551,9 +633,15 @@ class ScalpingBot:
                                 'quantity':    buy_qty,
                                 'entry_time':  datetime.now(),
                                 'tp':          result['tp'],
-                                'sl':          result['sl']
+                                'sl':          result['sl'],
+                                'step':        1,   # 2차 매수 대기
                             }
-                            print(f"    ORDER PLACED! ({buy_qty}주)")
+                            print(f"    ORDER PLACED! Step-1 ({buy_qty}주, 6%total)")
+                            notify_trade_open(
+                                ticker, result['price'], buy_qty,
+                                result['tp'], result['sl'], tags,
+                                market="US", paper_trading=self.paper_trading,
+                            )
                         else:
                             print(f"    ORDER FAILED")
                     else:
@@ -562,9 +650,10 @@ class ScalpingBot:
                             'quantity':    buy_qty,
                             'entry_time':  datetime.now(),
                             'tp':          result['tp'],
-                            'sl':          result['sl']
+                            'sl':          result['sl'],
+                            'step':        1,
                         }
-                        print(f"    [SIMULATED] ({buy_qty}주)")
+                        print(f"    [SIMULATED] Step-1 ({buy_qty}주)")
 
                 else:
                     strats = f"S1={result['s1']} S2={result['s2']} S3={result['s3']}"
@@ -596,9 +685,22 @@ class ScalpingBot:
         # 시작 시 즉시 체크포인트 생성 (Phase 2 artifact 전달 보장)
         self._save_checkpoint()
 
+        # US 마감 강제 청산 기준: NYSE 종료 21:00 UTC의 10분 전 = 20:50 UTC
+        US_FORCE_CLOSE_HOUR = 20
+        US_FORCE_CLOSE_MIN = 50
+
         try:
             while datetime.now() < end_time:
                 cycle += 1
+
+                # 장 마감 10분 전 강제 청산 (오버나잇 포지션 방지)
+                now_utc = datetime.now(timezone.utc)
+                if (now_utc.hour > US_FORCE_CLOSE_HOUR or
+                        (now_utc.hour == US_FORCE_CLOSE_HOUR and
+                         now_utc.minute >= US_FORCE_CLOSE_MIN)):
+                    print(f"\n  [MARKET CLOSE] UTC {now_utc.strftime('%H:%M')} - 마감 10분 전 전체 청산")
+                    self._force_close_all('MARKET_CLOSE')
+                    break
 
                 # 매 사이클마다 전략 설정 다시 로드 (실시간 반영)
                 live_config = load_strategy_config()
@@ -639,6 +741,10 @@ class ScalpingBot:
         self._print_summary()
         self._save_checkpoint()
         self._save_daily_summary()
+        notify_daily_summary(
+            self.trade_log, self.positions,
+            market="US", paper_trading=self.paper_trading,
+        )
 
     def run_once(self, models: dict, execute: bool = False):
         """1회 실행 (모든 종목 스캔 후 매수/매도)"""

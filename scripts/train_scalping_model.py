@@ -31,6 +31,7 @@ from sklearn.metrics import accuracy_score, f1_score, classification_report
 
 # 공유 Feature Engineering (core/scalping_signals.py)
 from core.scalping_signals import create_scalping_features
+from core.slack_notifier import notify_retrain_complete
 
 
 def collect_intraday_data(ticker: str, period: str = '5d') -> pd.DataFrame:
@@ -346,6 +347,10 @@ def main():
     print("\n" + "=" * 70)
     print("Training Complete!")
     print("=" * 70)
+
+    # 재학습 완료 Slack 알림
+    if all_results:
+        notify_retrain_complete(all_results, market="US")
 
 
 if __name__ == "__main__":
