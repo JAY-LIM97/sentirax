@@ -63,21 +63,11 @@ class KISTradingAPI:
 
     def _load_api_keys(self) -> tuple[str, str]:
         """
-        .env 파일에서 API 키 로드
+        API 키 로드 — GitHub Secrets(환경 변수)에서만 읽음
 
-        모의투자/실전투자에 따라 다른 키 사용:
-        - 모의투자: HT_API_FK_KEY, HT_API_FK_SECRET_KEY
-        - 실전투자: HT_API_KEY, HT_API_SECRET_KEY
-
-        Returns:
-            (app_key, app_secret)
+        모의투자: HT_API_FK_KEY, HT_API_FK_SECRET_KEY
+        실전투자: HT_API_KEY, HT_API_SECRET_KEY
         """
-        env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
-
-        if not os.path.exists(env_path):
-            raise FileNotFoundError(f".env 파일을 찾을 수 없습니다: {env_path}")
-
-        # 모의투자/실전투자에 따라 다른 키 이름 사용
         if self.paper_trading:
             key_name = 'HT_API_FK_KEY'
             secret_name = 'HT_API_FK_SECRET_KEY'
@@ -85,22 +75,16 @@ class KISTradingAPI:
             key_name = 'HT_API_KEY'
             secret_name = 'HT_API_SECRET_KEY'
 
-        app_key = None
-        app_secret = None
-
-        with open(env_path, 'r', encoding='utf-8') as f:
-            for line in f:
-                line = line.strip()
-                if line.startswith(f'{key_name}='):
-                    app_key = line.split('=', 1)[1].strip()
-                elif line.startswith(f'{secret_name}='):
-                    app_secret = line.split('=', 1)[1].strip()
+        app_key = os.environ.get(key_name)
+        app_secret = os.environ.get(secret_name)
 
         if not app_key or not app_secret:
-            raise ValueError(f"API 키를 찾을 수 없습니다. .env 파일에서 {key_name}, {secret_name}를 확인하세요.")
+            raise ValueError(
+                f"환경 변수 누락: {key_name}, {secret_name}\n"
+                f"  GitHub Actions: Settings → Secrets and variables → Actions 에서 추가 필요"
+            )
 
-        print(f"  - 사용 키: {key_name[:15]}...")  # 보안을 위해 일부만 표시
-
+        print(f"  - 키 로드: {key_name[:15]}...")
         return app_key, app_secret
 
     def authenticate(self) -> bool:
