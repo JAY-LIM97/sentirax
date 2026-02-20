@@ -583,6 +583,44 @@ class KISTradingAPI:
 
         return None
 
+    def get_holding_qty(self, ticker: str) -> int:
+        """
+        해외 주식 실제 보유수량 API 조회
+
+        Returns:
+            보유수량 (int) — 0이면 미보유, -1이면 API 조회 실패
+        """
+        data = self.get_balance()
+        if not data:
+            print(f"  ⚠️ [get_holding_qty] {ticker} 잔고 API 실패 → 확인 불가(-1)")
+            return -1
+        for holding in data.get('output1', []):
+            if holding.get('ovrs_pdno', '').upper() == ticker.upper():
+                qty = int(holding.get('ovrs_cblc_qty', 0) or 0)
+                print(f"  [get_holding_qty] {ticker} 실제보유: {qty}주")
+                return qty
+        print(f"  [get_holding_qty] {ticker} 잔고 없음(0주)")
+        return 0
+
+    def get_holding_qty_domestic(self, ticker: str) -> int:
+        """
+        국내 주식 실제 보유수량 API 조회
+
+        Returns:
+            보유수량 (int) — 0이면 미보유, -1이면 API 조회 실패
+        """
+        data = self.get_balance_domestic()
+        if not data:
+            print(f"  ⚠️ [get_holding_qty_domestic] {ticker} 잔고 API 실패 → 확인 불가(-1)")
+            return -1
+        for holding in data.get('output1', []):
+            if holding.get('pdno', '') == ticker:
+                qty = int(holding.get('hldg_qty', 0) or 0)
+                print(f"  [get_holding_qty_domestic] {ticker} 실제보유: {qty}주")
+                return qty
+        print(f"  [get_holding_qty_domestic] {ticker} 잔고 없음(0주)")
+        return 0
+
     def get_current_price(self, ticker: str) -> Optional[float]:
         """
         해외주식 현재가 조회

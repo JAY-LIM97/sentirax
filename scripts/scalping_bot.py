@@ -210,23 +210,26 @@ class ScalpingBot:
             print(f"  Checkpoint load error: {e}")
 
     def _get_total_balance_usd(self, config: dict) -> float:
-        """계좌 총 USD 잔고 조회 (캐시 → API → 설정값 순서)"""
+        """계좌 총 USD 잔고 조회 (API 우선, 실패 시 설정값 fallback + 경고)"""
         if self._balance_cache is not None:
             return self._balance_cache
 
         summary = self.api.get_account_summary()
         if summary and summary.get('total_usd', 0) > 0:
             self._balance_cache = summary['total_usd']
-            print(f"  Balance (API): ${self._balance_cache:,.0f}")
+            print(f"  [Balance] API 조회 성공: ${self._balance_cache:,.0f}")
             return self._balance_cache
 
+        # API 실패 시 config 설정값 fallback — 경고 출력
         alloc = config.get('allocation', {})
         fallback = float(alloc.get('account_balance_usd', 0))
         if fallback > 0:
+            print(f"  ⚠️  [Balance] API 조회 실패! config fallback ${fallback:,.0f} 사용")
+            print(f"  ⚠️  실제 잔고와 다를 수 있음. API 키/토큰/계좌번호 확인 필요!")
             self._balance_cache = fallback
-            print(f"  Balance (config): ${self._balance_cache:,.0f}")
             return self._balance_cache
 
+        print(f"  ❌ [Balance] 잔고 조회 완전 실패 — 매수 차단")
         return 0.0
 
     def _calc_step_qty(self, price: float, step: int, config: dict) -> int:
@@ -398,17 +401,17 @@ class ScalpingBot:
                 # TP/SL 체크
                 if pnl_pct >= pos['tp']:
                     print(f"  TP HIT {ticker}: +{pnl_pct:.2f}% (target: +{pos['tp']}%)")
-                    self._close_position(ticker, current_price, 'TP')
+                    self._close_position(ticker, current_price, 'TP', execute=execute)
                     closed_tickers.append(ticker)
 
                 elif pnl_pct <= -pos['sl']:
                     print(f"  SL HIT {ticker}: {pnl_pct:.2f}% (limit: -{pos['sl']}%)")
-                    self._close_position(ticker, current_price, 'SL')
+                    self._close_position(ticker, current_price, 'SL', execute=execute)
                     closed_tickers.append(ticker)
 
                 elif hold_minutes >= 60:
                     print(f"  TIMEOUT {ticker}: {pnl_pct:+.2f}% after {hold_minutes:.0f}min")
-                    self._close_position(ticker, current_price, 'TIMEOUT')
+                    self._close_position(ticker, current_price, 'TIMEOUT', execute=execute)
                     closed_tickers.append(ticker)
 
                 elif pos.get('step', 2) == 1 and pnl_pct >= step2_min_profit:
@@ -419,6 +422,10 @@ class ScalpingBot:
                     if execute:
                         order_result = self.api.order_buy(ticker, add_qty, price=current_price)
                         order_ok = bool(order_result)
+                        if order_ok:
+                            print(f"    ✅ Step-2 매수 성공")
+                        else:
+                            print(f"    ❌ Step-2 매수 실패")
                     if order_ok:
                         total_qty = pos['quantity'] + add_qty
                         avg_price = (pos['entry_price'] * pos['quantity'] +
@@ -427,8 +434,6 @@ class ScalpingBot:
                         self.positions[ticker]['entry_price'] = avg_price
                         self.positions[ticker]['step'] = 2
                         print(f"    avg=${avg_price:.2f}, total={total_qty}주 (12%까지 사용)")
-                    else:
-                        print(f"    Step-2 주문 실패")
 
                 else:
                     step_txt = f"[S{pos.get('step',2)}]" if pos.get('step',2) == 1 else ""
@@ -440,13 +445,37 @@ class ScalpingBot:
         for t in closed_tickers:
             del self.positions[t]
 
-    def _close_position(self, ticker: str, exit_price: float, reason: str):
-        """포지션 종료 (매도)"""
+    def _close_position(self, ticker: str, exit_price: float, reason: str, execute: bool = True):
+        """포지션 종료 (매도) — execute=False 시 시뮬레이션만"""
         pos = self.positions[ticker]
+        qty = pos['quantity']
         pnl_pct = (exit_price / pos['entry_price'] - 1) * 100
         hold_min = (datetime.now() - pos['entry_time']).total_seconds() / 60
 
-        self.api.order_sell(ticker, pos['quantity'], price=exit_price)
+        print(f"  [CLOSE] {ticker}: {pnl_pct:+.2f}% ({reason}) | "
+              f"진입 ${pos['entry_price']:.2f} → 청산 ${exit_price:.2f} | {qty}주")
+
+        if execute:
+            # ── 실제 보유수량 API 검증 ──────────────────────────────────
+            actual_qty = self.api.get_holding_qty(ticker)
+            if actual_qty == 0:
+                print(f"    ⚠️  실제 보유수량 0주 확인 — 매도 주문 취소 (잔고 없음)")
+            else:
+                if actual_qty < 0:
+                    # API 조회 실패 → 내부 기록값 사용
+                    print(f"    ⚠️  보유수량 API 조회 실패 — 내부 기록({qty}주)으로 매도 진행")
+                    actual_qty = qty
+                elif actual_qty != qty:
+                    print(f"    ⚠️  수량 불일치: 내부={qty}주 vs API={actual_qty}주 → API 값 사용")
+                    qty = actual_qty
+
+                order_result = self.api.order_sell(ticker, qty, price=exit_price)
+                if order_result:
+                    print(f"    ✅ 매도 주문 성공 — {qty}주 @ ${exit_price:.2f}")
+                else:
+                    print(f"    ❌ 매도 주문 실패 — 수동 확인 필요! ({ticker} {qty}주)")
+        else:
+            print(f"    [SIMULATED] 매도 {qty}주 @ ${exit_price:.2f}")
 
         self.trade_log.append({
             'ticker': ticker,
@@ -457,15 +486,13 @@ class ScalpingBot:
             'entry_time': pos['entry_time'],
             'exit_time': datetime.now()
         })
-
-        print(f"  CLOSED {ticker}: {pnl_pct:+.2f}% ({reason})")
         notify_trade_close(
             ticker, pos['entry_price'], exit_price,
             pnl_pct, reason, hold_min,
             market="US", paper_trading=self.paper_trading,
         )
 
-    def _force_close_all(self, reason: str = 'MARKET_CLOSE'):
+    def _force_close_all(self, reason: str = 'MARKET_CLOSE', execute: bool = True):
         """장 마감 전 모든 포지션 시장가 강제 청산"""
         if not self.positions:
             print(f"  [{reason}] 청산할 포지션 없음")
@@ -477,7 +504,7 @@ class ScalpingBot:
             try:
                 df = yf.Ticker(ticker).history(period='1d', interval='1m')
                 price = float(df['Close'].iloc[-1]) if not df.empty else self.positions[ticker]['entry_price']
-                self._close_position(ticker, price, reason)
+                self._close_position(ticker, price, reason, execute=execute)
             except Exception as e:
                 print(f"  {ticker} 강제 청산 오류: {e}")
         self.positions.clear()
@@ -699,7 +726,7 @@ class ScalpingBot:
                         (now_utc.hour == US_FORCE_CLOSE_HOUR and
                          now_utc.minute >= US_FORCE_CLOSE_MIN)):
                     print(f"\n  [MARKET CLOSE] UTC {now_utc.strftime('%H:%M')} - 마감 10분 전 전체 청산")
-                    self._force_close_all('MARKET_CLOSE')
+                    self._force_close_all('MARKET_CLOSE', execute=execute)
                     break
 
                 # 매 사이클마다 전략 설정 다시 로드 (실시간 반영)
