@@ -21,6 +21,7 @@ if platform.system() == 'Windows':
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import pandas as pd
+import numpy as np
 import yfinance as yf
 from datetime import datetime, timedelta, timezone
 
@@ -29,6 +30,7 @@ from core.scalping_signals import create_scalping_features, compute_rule_signals
 from core.slack_notifier import (
     notify_trade_open, notify_trade_close, notify_daily_summary,
 )
+from core.online_learner import OnlineLearner
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -77,6 +79,12 @@ class DomesticScalpingBot:
         self._balance_cache = None
         self.results_dir = os.path.join(PROJECT_ROOT, 'results')
         os.makedirs(self.results_dir, exist_ok=True)
+
+        # 온라인 학습 모델 로드 (없으면 GBM 단독 사용)
+        ol_path = os.path.join(self.models_dir, 'kr_scalping_online.pkl')
+        self.online_learner = OnlineLearner(ol_path)
+        if not self.online_learner.is_ready():
+            print("  [OnlineLearner] 모델 없음 — GBM 단독 모드")
 
         self._load_checkpoint()
         print("  봇 초기화 완료!")
@@ -200,6 +208,7 @@ class DomesticScalpingBot:
             'trade_log': []
         }
         for api_ticker, pos in self.positions.items():
+            efr = pos.get('entry_features_raw')
             checkpoint['positions'][api_ticker] = {
                 'entry_price': pos['entry_price'],
                 'quantity': pos['quantity'],
@@ -209,6 +218,7 @@ class DomesticScalpingBot:
                 'yf_ticker': pos.get('yf_ticker', ''),
                 'name': pos.get('name', api_ticker),
                 'step': pos.get('step', 2),
+                'entry_features_raw': efr.tolist() if efr is not None else None,
             }
         for trade in self.trade_log:
             checkpoint['trade_log'].append({
@@ -237,6 +247,7 @@ class DomesticScalpingBot:
                 print("  체크포인트 너무 오래됨, 건너뜀")
                 return
             for api_ticker, pos in checkpoint.get('positions', {}).items():
+                efr_list = pos.get('entry_features_raw')
                 self.positions[api_ticker] = {
                     'entry_price': pos['entry_price'],
                     'quantity': pos['quantity'],
@@ -246,6 +257,9 @@ class DomesticScalpingBot:
                     'yf_ticker': pos.get('yf_ticker', ''),
                     'name': pos.get('name', api_ticker),
                     'step': pos.get('step', 2),
+                    'entry_features_raw': (
+                        np.array(efr_list) if efr_list is not None else None
+                    ),
                 }
             for trade in checkpoint.get('trade_log', []):
                 self.trade_log.append({
@@ -290,7 +304,7 @@ class DomesticScalpingBot:
 
     def predict_entry(self, api_ticker: str, model_data: dict) -> dict:
         """
-        매수 진입 신호 예측 (ML + Rule 앙상블)
+        매수 진입 신호 예측 (OnlineLearner + GBM + Rule 앙상블)
 
         진입 조건 (OR):
           A) ML 신호(1) AND ML확률 >= min_prob  [기본]
@@ -302,59 +316,83 @@ class DomesticScalpingBot:
         if df is None or len(df) < 60:
             return None
 
-        model         = model_data['model']
-        scaler        = model_data['scaler']
-        feature_names = model_data['feature_names']
-        params        = model_data['params']
-
-        # ML Feature — 기존 모델이 저장한 피처명만 사용 (하위 호환)
-        features  = create_scalping_features(df)
-        available = [f for f in feature_names if f in features.columns]
-        X         = features[available]
-        valid_idx = X.notna().all(axis=1)
-        X_clean   = X[valid_idx]
-
-        if len(X_clean) == 0:
-            return None
-
-        X_latest    = X_clean.iloc[-1:]
-        X_scaled    = scaler.transform(X_latest)
-        prediction  = model.predict(X_scaled)[0]
-        probability = model.predict_proba(X_scaled)[0]
-        buy_prob    = float(probability[1]) if len(probability) > 1 else 0.0
-
+        features = create_scalping_features(df)
         current_price = float(df['Close'].iloc[-1])
 
-        # ── Rule-based 신호 (3전략) ──────────────────────────────────────────
+        # ── OnlineLearner (Universal SGD) ─────────────────────────────────────
+        ol_prob: float | None = None
+        ol_signal: int | None = None
+        entry_features_raw: np.ndarray | None = None
+
+        ol = self.online_learner
+        if ol.is_ready():
+            ol_cols = [f for f in ol.feature_names if f in features.columns]
+            X_ol = features[ol_cols].dropna()
+            if len(X_ol) > 0:
+                X_raw = X_ol.iloc[-1:].values
+                ol_signal, ol_prob = ol.predict(X_raw)
+                entry_features_raw = X_raw
+
+        # ── Per-ticker GBM ────────────────────────────────────────────────────
+        gbm_prob: float | None = None
+        gbm_signal: int | None = None
+        params = model_data['params']
+        tp = params['take_profit']
+        sl = params['stop_loss']
+
+        available = [f for f in model_data['feature_names'] if f in features.columns]
+        X_gbm = features[available]
+        X_clean = X_gbm[X_gbm.notna().all(axis=1)]
+        if len(X_clean) > 0:
+            X_scaled = model_data['scaler'].transform(X_clean.iloc[-1:])
+            gbm_pred = model_data['model'].predict(X_scaled)[0]
+            gbm_proba = model_data['model'].predict_proba(X_scaled)[0]
+            gbm_signal = int(gbm_pred)
+            gbm_prob = float(gbm_proba[1]) if len(gbm_proba) > 1 else 0.0
+
+        # ── 신호 결합 ─────────────────────────────────────────────────────────
+        ol_w = ol.get_blend_weight() if ol.is_ready() else 0.0
+
+        if ol_prob is not None and gbm_prob is not None:
+            buy_prob = ol_prob * ol_w + gbm_prob * (1.0 - ol_w)
+            signal = ol_signal if ol_w >= 0.5 else gbm_signal
+        elif ol_prob is not None:
+            buy_prob = ol_prob
+            signal = ol_signal
+        elif gbm_prob is not None:
+            buy_prob = gbm_prob
+            signal = gbm_signal
+        else:
+            return None
+
+        # ── Rule-based 신호 (3전략) ───────────────────────────────────────────
         rule  = compute_rule_signals(df)
         score = rule['signal_score']
 
         if score >= 2:
             tp = rule['dynamic_tp']
             sl = rule['dynamic_sl']
-        else:
-            tp = params['take_profit']
-            sl = params['stop_loss']
 
         buy_prob_adj = min(buy_prob * (1 + 0.10 * score), 0.99)
 
         return {
-            'api_ticker':    api_ticker,
-            'yf_ticker':     yf_ticker,
-            'name':          model_data.get('name', api_ticker),
-            'signal':        int(prediction),
-            'buy_prob':      buy_prob,
-            'buy_prob_adj':  buy_prob_adj,
-            'price':         current_price,
-            'price_int':     int(round(current_price)),
-            'tp':            tp,
-            'sl':            sl,
-            's1':            rule['s1'],
-            's2':            rule['s2'],
-            's3':            rule['s3'],
-            'signal_score':  score,
-            'breakdown_risk': rule['breakdown_risk'],
-            'time':          datetime.now()
+            'api_ticker':         api_ticker,
+            'yf_ticker':          yf_ticker,
+            'name':               model_data.get('name', api_ticker),
+            'signal':             int(signal),
+            'buy_prob':           buy_prob,
+            'buy_prob_adj':       buy_prob_adj,
+            'price':              current_price,
+            'price_int':          int(round(current_price)),
+            'tp':                 tp,
+            'sl':                 sl,
+            's1':                 rule['s1'],
+            's2':                 rule['s2'],
+            's3':                 rule['s3'],
+            'signal_score':       score,
+            'breakdown_risk':     rule['breakdown_risk'],
+            'entry_features_raw': entry_features_raw,
+            'time':               datetime.now()
         }
 
     def check_positions(self, execute: bool = True):
@@ -462,6 +500,12 @@ class DomesticScalpingBot:
             'entry_time': pos['entry_time'],
             'exit_time': datetime.now()
         })
+
+        # ── 온라인 모델 실거래 피드백 ─────────────────────────────────────────
+        efr = pos.get('entry_features_raw')
+        if efr is not None and self.online_learner.is_ready():
+            self.online_learner.update(efr, pnl_pct, reason)
+
         notify_trade_close(
             api_ticker, pos['entry_price'], exit_price,
             pnl_pct, reason, hold_min,
@@ -607,14 +651,15 @@ class DomesticScalpingBot:
                             api_ticker, buy_qty, price=result['price_int'])
                         if order_result:
                             self.positions[api_ticker] = {
-                                'entry_price': result['price_int'],
-                                'quantity':    buy_qty,
-                                'entry_time':  datetime.now(),
-                                'tp':          result['tp'],
-                                'sl':          result['sl'],
-                                'yf_ticker':   result['yf_ticker'],
-                                'name':        result['name'],
-                                'step':        1,
+                                'entry_price':        result['price_int'],
+                                'quantity':           buy_qty,
+                                'entry_time':         datetime.now(),
+                                'tp':                 result['tp'],
+                                'sl':                 result['sl'],
+                                'yf_ticker':          result['yf_ticker'],
+                                'name':               result['name'],
+                                'step':               1,
+                                'entry_features_raw': result.get('entry_features_raw'),
                             }
                             print(f"    ORDER PLACED! Step-1 ({buy_qty}주, 6%total)")
                             notify_trade_open(
@@ -626,14 +671,15 @@ class DomesticScalpingBot:
                             print(f"    ORDER FAILED")
                     else:
                         self.positions[api_ticker] = {
-                            'entry_price': result['price_int'],
-                            'quantity':    buy_qty,
-                            'entry_time':  datetime.now(),
-                            'tp':          result['tp'],
-                            'sl':          result['sl'],
-                            'yf_ticker':   result['yf_ticker'],
-                            'name':        result['name'],
-                            'step':        1,
+                            'entry_price':        result['price_int'],
+                            'quantity':           buy_qty,
+                            'entry_time':         datetime.now(),
+                            'tp':                 result['tp'],
+                            'sl':                 result['sl'],
+                            'yf_ticker':          result['yf_ticker'],
+                            'name':               result['name'],
+                            'step':               1,
+                            'entry_features_raw': result.get('entry_features_raw'),
                         }
                         print(f"    [SIMULATED] ({buy_qty}주)")
                 else:

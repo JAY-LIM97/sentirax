@@ -32,6 +32,7 @@ from sklearn.metrics import accuracy_score, f1_score, classification_report
 # 공유 Feature Engineering (core/scalping_signals.py)
 from core.scalping_signals import create_scalping_features
 from core.slack_notifier import notify_retrain_complete
+from core.online_learner import OnlineLearner
 
 
 def collect_intraday_data(ticker: str, period: str = '5d') -> pd.DataFrame:
@@ -268,6 +269,81 @@ def train_scalping_model(ticker: str, df_raw: pd.DataFrame) -> dict:
     }
 
 
+def train_universal_scalping_model(tickers: list, models_dir: str) -> bool:
+    """
+    전체 종목 합산 데이터로 유니버설 SGD 온라인 모델 초기 학습.
+
+    모든 종목의 1분봉 feature를 합산해 단일 StandardScaler + SGDClassifier를
+    학습한 뒤 models/scalping_online.pkl 로 저장.
+    이후 ScalpingBot이 실거래 결과로 partial_fit 업데이트.
+
+    Args:
+        tickers:    학습 대상 종목 코드 목록
+        models_dir: models/ 디렉터리 절대 경로
+
+    Returns:
+        성공 여부
+    """
+    print(f"\n{'='*70}")
+    print("  Universal SGD Model Training (Online Learning Init)")
+    print(f"{'='*70}")
+
+    all_X: list[np.ndarray] = []
+    all_y: list[np.ndarray] = []
+    feature_cols: list[str] | None = None
+
+    for ticker in tickers:
+        print(f"\n  Collecting data for {ticker}...")
+        df = collect_intraday_data(ticker, period='5d')
+        if df is None or len(df) < 200:
+            print(f"  Skipping {ticker}: insufficient data")
+            continue
+
+        features = create_scalping_features(df)
+        avg_range = (df['High'] / df['Low'] - 1).mean() * 100
+        tp = min(max(round(avg_range * 1.5, 1), 1.5), 5.0)
+        sl = min(max(round(avg_range * 1.0, 1), 1.0), 3.0)
+        labels = label_scalping(df, take_profit=tp, stop_loss=sl)
+
+        cols = [c for c in features.columns
+                if c not in ['close', 'volume', 'ma_5m', 'ma_10m', 'ma_20m', 'ma_60m']]
+        if feature_cols is None:
+            feature_cols = cols
+
+        combined = features[feature_cols].copy()
+        combined['label'] = labels
+        combined = combined.dropna()
+        if len(combined) < 50:
+            continue
+
+        all_X.append(combined[feature_cols].values)
+        all_y.append(combined['label'].values.astype(int))
+        print(f"  {ticker}: {len(combined)} rows added")
+
+    if not all_X:
+        print("  No data collected — universal SGD model not trained")
+        return False
+
+    X_all = np.vstack(all_X)
+    y_all = np.hstack(all_y)
+    print(f"\n  Combined: {len(X_all)} rows from {len(all_X)} tickers")
+
+    model_path = os.path.join(models_dir, 'scalping_online.pkl')
+    ol = OnlineLearner(model_path)
+    success = ol.initialize_with_bulk(X_all, y_all, feature_cols)
+
+    if success:
+        # 학습 정확도 평가 (훈련 데이터 기준 참고용)
+        X_scaled = ol.scaler.transform(X_all)
+        y_pred = ol.model.predict(X_scaled)
+        acc = accuracy_score(y_all, y_pred)
+        f1 = f1_score(y_all, y_pred, zero_division=0)
+        print(f"  Training acc={acc*100:.1f}%, f1={f1:.3f}")
+        print(f"  Saved: {model_path}")
+
+    return success
+
+
 def main():
     print("=" * 70)
     print("Scalping Model Training - Surging Stocks TOP 20")
@@ -347,6 +423,10 @@ def main():
     print("\n" + "=" * 70)
     print("Training Complete!")
     print("=" * 70)
+
+    # 유니버설 SGD 온라인 모델 초기 학습
+    models_dir = os.path.join(os.path.dirname(__file__), '..', 'models')
+    train_universal_scalping_model(tickers, models_dir)
 
     # 재학습 완료 Slack 알림
     if all_results:

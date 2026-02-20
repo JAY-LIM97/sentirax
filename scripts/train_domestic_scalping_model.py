@@ -29,6 +29,7 @@ from sklearn.metrics import accuracy_score, f1_score
 # 공유 Feature Engineering (core/scalping_signals.py)
 from core.scalping_signals import create_scalping_features
 from core.slack_notifier import notify_retrain_complete
+from core.online_learner import OnlineLearner
 
 
 PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -203,6 +204,78 @@ def train_kr_scalping_model(api_ticker: str, yf_ticker: str, name: str,
     }
 
 
+def train_universal_kr_scalping_model(ticker_list: list, models_dir: str) -> bool:
+    """
+    국내 전체 종목 합산 데이터로 유니버설 KR SGD 온라인 모델 초기 학습.
+
+    Args:
+        ticker_list: [{'api_ticker': ..., 'yf_ticker': ..., 'name': ...}, ...]
+        models_dir:  models/ 디렉터리 절대 경로
+
+    Returns:
+        성공 여부
+    """
+    print(f"\n{'='*70}")
+    print("  Universal KR SGD Model Training (Online Learning Init)")
+    print(f"{'='*70}")
+
+    all_X: list[np.ndarray] = []
+    all_y: list[np.ndarray] = []
+    feature_cols: list[str] | None = None
+
+    for item in ticker_list:
+        yf_ticker = item['yf_ticker']
+        print(f"\n  Collecting data for {item['name']} ({yf_ticker})...")
+        df = collect_kr_intraday(yf_ticker, period='5d')
+        if df is None or len(df) < 200:
+            print(f"  Skipping: insufficient data")
+            continue
+
+        features = create_scalping_features(df)
+        avg_range = (df['High'] / df['Low'] - 1).mean() * 100
+        tp = min(max(round(avg_range * 1.5, 1), 1.5), 5.0)
+        sl = min(max(round(avg_range * 1.0, 1), 1.0), 3.0)
+        labels = label_scalping(df, take_profit=tp, stop_loss=sl)
+
+        cols = [c for c in features.columns
+                if c not in ['close', 'volume', 'ma_5m', 'ma_10m', 'ma_20m', 'ma_60m']]
+        if feature_cols is None:
+            feature_cols = cols
+
+        combined = features[feature_cols].copy()
+        combined['label'] = labels
+        combined = combined.dropna()
+        if len(combined) < 50:
+            continue
+
+        all_X.append(combined[feature_cols].values)
+        all_y.append(combined['label'].values.astype(int))
+        print(f"  {item['name']}: {len(combined)} rows added")
+
+    if not all_X:
+        print("  No data collected — KR universal SGD model not trained")
+        return False
+
+    X_all = np.vstack(all_X)
+    y_all = np.hstack(all_y)
+    print(f"\n  Combined: {len(X_all)} rows from {len(all_X)} tickers")
+
+    model_path = os.path.join(models_dir, 'kr_scalping_online.pkl')
+    ol = OnlineLearner(model_path)
+    success = ol.initialize_with_bulk(X_all, y_all, feature_cols)
+
+    if success:
+        from sklearn.metrics import accuracy_score, f1_score
+        X_scaled = ol.scaler.transform(X_all)
+        y_pred = ol.model.predict(X_scaled)
+        acc = accuracy_score(y_all, y_pred)
+        f1 = f1_score(y_all, y_pred, zero_division=0)
+        print(f"  Training acc={acc*100:.1f}%, f1={f1:.3f}")
+        print(f"  Saved: {model_path}")
+
+    return success
+
+
 def main():
     print("=" * 70)
     print("국내주식 스캘핑 모델 학습 - 급등주 TOP 20")
@@ -258,6 +331,12 @@ def main():
                   f"{r['avg_return']:>+7.2f}% {mark:>5}")
     else:
         print("  저장된 모델 없음")
+
+    # 유니버설 KR SGD 온라인 모델 초기 학습
+    models_dir = os.path.join(PROJECT_ROOT, 'models')
+    ticker_list = [{'api_ticker': t[0], 'yf_ticker': t[1], 'name': t[2]}
+                   for t in stocks]
+    train_universal_kr_scalping_model(ticker_list, models_dir)
 
     # 재학습 완료 Slack 알림
     if all_results:
