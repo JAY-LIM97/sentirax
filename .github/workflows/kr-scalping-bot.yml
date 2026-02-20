@@ -26,24 +26,29 @@ jobs:
           import time
           from datetime import datetime, timezone, timedelta
 
-          TARGET_HOUR, TARGET_MIN = 0, 30   # UTC 00:30 = KR 장 시작 30분 후
+          # KR 장 시간: UTC 00:00(KST 09:00) ~ UTC 06:30(KST 15:30)
+          # 오프닝 30분 경과 후 시작: UTC 00:30
+          KR_TARGET_MINS = 30   # UTC 00:30 (장 시작 30분 후)
+          KR_CLOSE_MINS  = 390  # UTC 06:30
+
           now = datetime.now(timezone.utc)
-          target = now.replace(hour=TARGET_HOUR, minute=TARGET_MIN, second=0, microsecond=0)
-          if now >= target:
-              elapsed = (now - target).total_seconds()
-              if elapsed > 3 * 3600:  # 3시간 이상 지남 → 저녁 시간대, 다음날 대상
-                  target += timedelta(days=1)
-              # else: 방금 지났으면(지연 실행) → 즉시 진행
-          wait_sec = (target - now).total_seconds()
-          if wait_sec < 30:
-              print(f"Already at/near target ({now.strftime('%H:%M')} UTC)")
+          now_mins = now.hour * 60 + now.minute
+
+          if KR_TARGET_MINS <= now_mins < KR_CLOSE_MINS:
+              # 이미 목표 시간 지남 & 장 중: 즉시 시작
+              print(f"[Standby] KR market +30min reached ({now.strftime('%H:%M')} UTC). Starting immediately.")
           else:
-              print(f"[Standby] {wait_sec/60:.0f} min until UTC {TARGET_HOUR:02d}:{TARGET_MIN:02d}...")
+              # 목표 시간 전 or 장 마감 후 → UTC 00:30까지 대기
+              target = now.replace(hour=0, minute=30, second=0, microsecond=0)
+              if now >= target:
+                  target += timedelta(days=1)
+              wait_sec = (target - now).total_seconds()
+              print(f"[Standby] {wait_sec/60:.0f} min until UTC 00:30 (KR market +30min)...")
               while datetime.now(timezone.utc) < target:
                   remaining = (target - datetime.now(timezone.utc)).total_seconds()
                   print(f"  Remaining: {remaining/60:.0f} min")
                   time.sleep(min(300, max(remaining, 1)))
-          print(f"[Standby] Done at {datetime.now(timezone.utc).strftime('%H:%M')} UTC")
+              print(f"[Standby] Done at {datetime.now(timezone.utc).strftime('%H:%M')} UTC")
           EOF
 
   # Phase 1: 오프닝 서지 스캔 → 모델 학습 → 스캘핑 (~2.5시간)
