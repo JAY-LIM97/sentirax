@@ -98,6 +98,10 @@ def get_stock_momentum(api_ticker: str, yf_ticker: str, name: str,
             current_price = df['Close'].iloc[-1]
             change_pct = (current_price / open_price - 1) * 100
 
+            # 하락 종목 제외: -0.5% 이하면 스캘핑 부적합
+            if change_pct < -0.5:
+                return None
+
             # 거래량 비율 (최근 5분 vs 전체 평균)
             avg_vol = df['Volume'].mean()
             recent_vol = df['Volume'].iloc[-5:].mean()
@@ -112,6 +116,10 @@ def get_stock_momentum(api_ticker: str, yf_ticker: str, name: str,
             open_price = df['Close'].iloc[-2]
             current_price = df['Close'].iloc[-1]
             change_pct = (current_price / open_price - 1) * 100
+
+            # 하락 종목 제외
+            if change_pct < -0.5:
+                return None
 
             vol_20d = df['Volume'].mean()
             recent_vol = df['Volume'].iloc[-1]
@@ -169,12 +177,14 @@ def scan_domestic_surging_stocks(top_n: int = 20, opening_surge: bool = False) -
 
     df = pd.DataFrame(results)
 
-    # 상승 종목만 필터 (마이너스 제외)
+    # 상승 종목만 필터 (하락 종목 = 스캘핑 부적합 → 제외)
     df_up = df[df['change_pct'] > 0].copy()
 
     if df_up.empty:
-        print("\n  상승 종목 없음. 전체 종목 반환.")
-        df_up = df.copy()
+        print("\n  상승 종목 없음. 스캔 결과 없음으로 반환.")
+        # 하락 종목을 억지로 반환하면 역선택 → 빈 DataFrame 반환
+        return pd.DataFrame(columns=['api_ticker', 'yf_ticker', 'name', 'price',
+                                     'change_pct', 'vol_ratio', 'score'])
 
     # 스코어 기준 정렬
     df_up = df_up.sort_values('score', ascending=False).head(top_n)

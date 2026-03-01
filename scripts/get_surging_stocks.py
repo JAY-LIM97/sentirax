@@ -111,12 +111,19 @@ def scan_surging_stocks(top_n: int = 20, opening_surge: bool = False) -> pd.Data
                 else:
                     momentum = open_return
 
-                # 오프닝 서지 점수 (시가 대비 변화 + 거래량 폭증 중심)
+                # 하락 종목 필터: 시가 대비 -1% 이하면 스캘핑 부적합 (역선택 방지)
+                if open_return < -1.0:
+                    continue
+
+                # 오프닝 서지 점수 (상승 방향만 가산, 하락은 감점)
+                return_score   = max(open_return, 0) * 3       # 상승률만 가산
+                momentum_score = max(momentum, 0) * 2          # 상승 모멘텀만 가산
+
                 surge_score = (
-                    abs(open_return) * 3 +           # 시가 대비 변화율 (핵심)
-                    min(volume_vs_avg, 10) * 3 +     # 거래량 폭증 (10배 cap)
-                    abs(momentum) * 2 +              # 최근 10분 모멘텀
-                    day_range * 1.5                  # 장중 변동폭
+                    return_score +                             # 시가 대비 상승률 (핵심)
+                    min(volume_vs_avg, 10) * 3 +               # 거래량 폭증 (10배 cap)
+                    momentum_score +                           # 최근 10분 상승 모멘텀
+                    day_range * 1.0                            # 장중 변동폭 (가중치 축소)
                 )
 
                 results.append({
@@ -164,11 +171,15 @@ def scan_surging_stocks(top_n: int = 20, opening_surge: bool = False) -> pd.Data
                 else:
                     recent_return = day_return
 
+                # 하락 종목 필터: -1% 이하면 제외
+                if day_return < -1.0:
+                    continue
+
                 surge_score = (
-                    abs(day_return) * 2 +
-                    day_range * 1.5 +
-                    min(volume_spike, 10) * 3 +
-                    abs(recent_return) * 1.5
+                    max(day_return, 0) * 2 +           # 상승률만 가산
+                    day_range * 1.0 +                  # 변동폭 (가중치 축소)
+                    min(volume_spike, 10) * 3 +         # 거래량 폭증
+                    max(recent_return, 0) * 1.5         # 상승 모멘텀만
                 )
 
                 results.append({
