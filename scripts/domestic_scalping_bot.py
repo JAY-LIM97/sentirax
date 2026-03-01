@@ -177,8 +177,8 @@ class DomesticScalpingBot:
 
     def _select_top_volume_kr_tickers(self, models: dict, max_n: int = 5) -> dict:
         """
-        실시간 거래량 기준 상위 N개 국내 종목 선정 (다이나믹 스캐너)
-        yfinance fast_info 기반으로 빠르게 거래량 비율 계산
+        실시간 거래량 + 가격 모멘텀 기준 상위 N개 국내 종목 선정
+        거래량만 높고 하락 중인 종목(역선택) 방지
         """
         volume_scores: dict[str, float] = {}
         for api_ticker, model_data in models.items():
@@ -187,7 +187,19 @@ class DomesticScalpingBot:
                 fi = yf.Ticker(yf_ticker).fast_info
                 today_vol = getattr(fi, 'last_volume', None) or 0
                 avg_vol = getattr(fi, 'three_month_average_volume', None) or today_vol or 1
-                volume_scores[api_ticker] = today_vol / avg_vol if avg_vol > 0 else 0.0
+                vol_ratio = today_vol / avg_vol if avg_vol > 0 else 0.0
+
+                # 당일 수익률 체크 (하락 종목 필터링)
+                prev_close = getattr(fi, 'previous_close', None) or 0
+                last_price = getattr(fi, 'last_price', None) or 0
+                day_return = ((last_price / prev_close) - 1) * 100 if prev_close > 0 else 0.0
+
+                if day_return < -1.0:
+                    volume_scores[api_ticker] = 0.0
+                elif day_return < 0:
+                    volume_scores[api_ticker] = vol_ratio * 0.5
+                else:
+                    volume_scores[api_ticker] = vol_ratio * (1 + day_return * 0.1)
             except Exception:
                 volume_scores[api_ticker] = 0.0
 
@@ -197,7 +209,7 @@ class DomesticScalpingBot:
         print(f"\n  [볼륨 스캐너] 상위 {max_n}개 타겟 (전체 {len(models)}개 중):")
         for i, t in enumerate(top):
             name = models[t].get('name', t) if t in models else t
-            print(f"    {i+1}. {t}({name}): ×{volume_scores.get(t, 0):.2f}")
+            print(f"    {i+1}. {t}({name}): score={volume_scores.get(t, 0):.2f}")
 
         return {t: models[t] for t in top if t in models}
 
@@ -431,7 +443,7 @@ class DomesticScalpingBot:
                     print(f"  SL HIT {api_ticker}({pos.get('name','')}): {pnl_pct:.2f}%")
                     self._close_position(api_ticker, current_price_int, 'SL', execute=execute)
                     closed.append(api_ticker)
-                elif hold_min >= 60:
+                elif hold_min >= 30:
                     print(f"  TIMEOUT {api_ticker}: {pnl_pct:+.2f}% ({hold_min:.0f}분)")
                     self._close_position(api_ticker, current_price_int, 'TIMEOUT', execute=execute)
                     closed.append(api_ticker)
@@ -636,8 +648,8 @@ class DomesticScalpingBot:
                 prob_adj = result['buy_prob_adj']
 
                 ml_ok       = result['signal'] == 1 and prob >= min_prob
-                rule_ok     = score >= 2 and prob >= max(min_prob - 0.10, 0.40) and not result['breakdown_risk']
-                rule_strong = score == 3 and prob >= 0.40 and not result['breakdown_risk']
+                rule_ok     = score >= 2 and prob >= max(min_prob - 0.05, 0.50) and not result['breakdown_risk']
+                rule_strong = score == 3 and prob >= 0.50 and not result['breakdown_risk']
 
                 enter = ml_ok or rule_ok or rule_strong
 

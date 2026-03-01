@@ -49,9 +49,16 @@ def collect_kr_intraday(yf_ticker: str, period: str = '5d') -> pd.DataFrame:
 
 
 def label_scalping(df: pd.DataFrame, take_profit: float, stop_loss: float,
-                   max_hold_minutes: int = 60) -> pd.Series:
-    """스캘핑 레이블링 (1=익절, 0=손절/타임아웃)"""
+                   max_hold_minutes: int = 30) -> pd.Series:
+    """
+    스캘핑 레이블링 (1=익절, 0=손절/타임아웃) — High/Low 기반
+
+    Close 대신 High/Low를 사용하여 실제 장중 가격 움직임 반영.
+    같은 봉에서 TP/SL 동시 도달 시 Close 기준으로 판정.
+    """
     labels = pd.Series(index=df.index, dtype=float)
+    high  = df['High'].values
+    low   = df['Low'].values
     close = df['Close'].values
 
     for i in range(len(close) - max_hold_minutes):
@@ -61,10 +68,16 @@ def label_scalping(df: pd.DataFrame, take_profit: float, stop_loss: float,
         label = 0
 
         for j in range(i + 1, min(i + max_hold_minutes + 1, len(close))):
-            if close[j] >= tp_price:
+            hit_tp = high[j] >= tp_price
+            hit_sl = low[j] <= sl_price
+
+            if hit_tp and hit_sl:
+                label = 1 if close[j] >= entry_price else 0
+                break
+            elif hit_tp:
                 label = 1
                 break
-            elif close[j] <= sl_price:
+            elif hit_sl:
                 break
 
         labels.iloc[i] = label
@@ -81,13 +94,13 @@ def train_kr_scalping_model(api_ticker: str, yf_ticker: str, name: str,
 
     features = create_scalping_features(df_raw)
 
-    # TP/SL 자동 설정
+    # TP/SL 자동 설정 (현실적 스캘핑 범위)
     avg_range = (df_raw['High'] / df_raw['Low'] - 1).mean() * 100
-    tp = min(max(round(avg_range * 1.5, 1), 1.5), 5.0)
-    sl = min(max(round(avg_range * 1.0, 1), 1.0), 3.0)
+    tp = min(max(round(avg_range * 1.2, 1), 0.8), 3.0)
+    sl = min(max(round(avg_range * 0.8, 1), 0.5), 2.0)
 
-    print(f"  Labeling (TP={tp}%, SL={sl}%, MaxHold=60min)...")
-    labels = label_scalping(df_raw, take_profit=tp, stop_loss=sl, max_hold_minutes=60)
+    print(f"  Labeling (TP={tp}%, SL={sl}%, MaxHold=30min)...")
+    labels = label_scalping(df_raw, take_profit=tp, stop_loss=sl, max_hold_minutes=30)
 
     feature_cols = [c for c in features.columns if c not in
                     ['close', 'volume', 'ma_5m', 'ma_10m', 'ma_20m', 'ma_60m']]
@@ -128,19 +141,25 @@ def train_kr_scalping_model(api_ticker: str, yf_ticker: str, name: str,
     accuracy = accuracy_score(y_test, y_pred)
     f1 = f1_score(y_test, y_pred, zero_division=0)
 
-    # 백테스팅
+    # 백테스팅 — High/Low 기반
     close_prices = df_raw['Close'].reindex(X_test.index).values
+    high_prices  = df_raw['High'].reindex(X_test.index).values
+    low_prices   = df_raw['Low'].reindex(X_test.index).values
     test_trades = []
     for i in range(len(y_pred)):
         if y_pred[i] == 1 and i < len(close_prices):
             entry_price = close_prices[i]
             trade_result = 0
-            for j in range(i + 1, min(i + 61, len(close_prices))):
-                pnl = (close_prices[j] / entry_price - 1) * 100
-                if pnl >= tp:
+            for j in range(i + 1, min(i + 31, len(close_prices))):
+                hit_tp = high_prices[j] >= entry_price * (1 + tp / 100)
+                hit_sl = low_prices[j] <= entry_price * (1 - sl / 100)
+                if hit_tp and hit_sl:
+                    trade_result = tp if close_prices[j] >= entry_price else -sl
+                    break
+                elif hit_tp:
                     trade_result = tp
                     break
-                elif pnl <= -sl:
+                elif hit_sl:
                     trade_result = -sl
                     break
             test_trades.append(trade_result)
@@ -233,9 +252,9 @@ def train_universal_kr_scalping_model(ticker_list: list, models_dir: str) -> boo
 
         features = create_scalping_features(df)
         avg_range = (df['High'] / df['Low'] - 1).mean() * 100
-        tp = min(max(round(avg_range * 1.5, 1), 1.5), 5.0)
-        sl = min(max(round(avg_range * 1.0, 1), 1.0), 3.0)
-        labels = label_scalping(df, take_profit=tp, stop_loss=sl)
+        tp = min(max(round(avg_range * 1.2, 1), 0.8), 3.0)
+        sl = min(max(round(avg_range * 0.8, 1), 0.5), 2.0)
+        labels = label_scalping(df, take_profit=tp, stop_loss=sl, max_hold_minutes=30)
 
         cols = [c for c in features.columns
                 if c not in ['close', 'volume', 'ma_5m', 'ma_10m', 'ma_20m', 'ma_60m']]

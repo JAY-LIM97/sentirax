@@ -276,9 +276,9 @@ class ScalpingBot:
 
     def _select_top_volume_tickers(self, models: dict, max_n: int = 5) -> dict:
         """
-        실시간 거래량 기준 상위 N개 종목 선정 (다이나믹 스캐너)
-        fast_info.last_volume ÷ three_month_average_volume 비율 기준 정렬
-        거래량 급감 종목은 자동 제외, 대기 종목으로 교체
+        실시간 거래량 + 가격 모멘텀 기준 상위 N개 종목 선정 (다이나믹 스캐너)
+        거래량 비율(today/avg) × 당일 수익률(양수만) 가중 스코어
+        거래량만 높고 하락 중인 종목(역선택) 방지
         """
         volume_scores: dict[str, float] = {}
         for ticker in models:
@@ -287,7 +287,20 @@ class ScalpingBot:
                 fi = stock.fast_info
                 today_vol = getattr(fi, 'last_volume', None) or 0
                 avg_vol = getattr(fi, 'three_month_average_volume', None) or today_vol or 1
-                volume_scores[ticker] = today_vol / avg_vol if avg_vol > 0 else 0.0
+                vol_ratio = today_vol / avg_vol if avg_vol > 0 else 0.0
+
+                # 당일 수익률 체크 (하락 종목 필터링)
+                prev_close = getattr(fi, 'previous_close', None) or 0
+                last_price = getattr(fi, 'last_price', None) or 0
+                day_return = ((last_price / prev_close) - 1) * 100 if prev_close > 0 else 0.0
+
+                # 하락 중인 종목은 거래량 높아도 패널티 (역선택 방지)
+                if day_return < -1.0:
+                    volume_scores[ticker] = 0.0  # 1% 이상 하락 → 제외
+                elif day_return < 0:
+                    volume_scores[ticker] = vol_ratio * 0.5  # 약한 하락 → 절반
+                else:
+                    volume_scores[ticker] = vol_ratio * (1 + day_return * 0.1)  # 상승 시 가산
             except Exception:
                 volume_scores[ticker] = 0.0
 
@@ -296,7 +309,7 @@ class ScalpingBot:
 
         print(f"\n  [Volume Scanner] Top {max_n} targets (of {len(models)}):")
         for i, t in enumerate(top):
-            print(f"    {i+1}. {t}: ×{volume_scores.get(t, 0):.2f}")
+            print(f"    {i+1}. {t}: score={volume_scores.get(t, 0):.2f}")
 
         return {t: models[t] for t in top if t in models}
 
@@ -459,7 +472,7 @@ class ScalpingBot:
                     self._close_position(ticker, current_price, 'SL', execute=execute)
                     closed_tickers.append(ticker)
 
-                elif hold_minutes >= 60:
+                elif hold_minutes >= 30:
                     print(f"  TIMEOUT {ticker}: {pnl_pct:+.2f}% after {hold_minutes:.0f}min")
                     self._close_position(ticker, current_price, 'TIMEOUT', execute=execute)
                     closed_tickers.append(ticker)
@@ -688,10 +701,10 @@ class ScalpingBot:
 
                 # A) ML 기본: 신호=1 AND 확률 충족
                 ml_ok   = result['signal'] == 1 and prob >= min_prob
-                # B) 룰 보조: 룰 2개+ AND 확률 10%p 완화 AND 거짓돌파 아님
-                rule_ok = score >= 2 and prob >= max(min_prob - 0.10, 0.40) and not result['breakdown_risk']
-                # C) 룰 3개 일치: 확률 0.40 이상이면 진입
-                rule_strong = score == 3 and prob >= 0.40 and not result['breakdown_risk']
+                # B) 룰 보조: 룰 2개+ AND 확률 5%p 완화 AND 거짓돌파 아님
+                rule_ok = score >= 2 and prob >= max(min_prob - 0.05, 0.50) and not result['breakdown_risk']
+                # C) 룰 3개 일치: ML확률 0.50 이상 + 거짓돌파 아님
+                rule_strong = score == 3 and prob >= 0.50 and not result['breakdown_risk']
 
                 enter = ml_ok or rule_ok or rule_strong
 

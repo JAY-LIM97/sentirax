@@ -293,9 +293,9 @@ def compute_rule_signals(df: pd.DataFrame) -> dict:
 
         tp_pct = sl_pct * tp_ratio
 
-        # 합리적 범위 제한
-        sl_pct = max(0.5, min(sl_pct, 3.0))
-        tp_pct = max(0.75, min(tp_pct, 7.5))
+        # 합리적 범위 제한 (스캘핑 현실 범위)
+        sl_pct = max(0.8, min(sl_pct, 2.5))
+        tp_pct = max(1.0, min(tp_pct, 5.0))
 
         return {
             's1': s1,

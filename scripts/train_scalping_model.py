@@ -2,7 +2,7 @@
 Scalping Model - 1분봉 기반 스캘핑 ML 모델
 
 - 급등주 TOP 20 대상 1분봉 데이터 수집 (최근 5일)
-- 손절 3% / 익절 5% 기준 레이블링
+- High/Low 기반 TP/SL 레이블링 (현실적 스캘핑 범위)
 - ML 모델로 진입 타이밍 예측
 - 백테스팅으로 검증
 
@@ -51,16 +51,21 @@ def collect_intraday_data(ticker: str, period: str = '5d') -> pd.DataFrame:
         return None
 
 
-def label_scalping(df: pd.DataFrame, take_profit: float = 5.0, stop_loss: float = 3.0,
-                   max_hold_minutes: int = 60) -> pd.Series:
+def label_scalping(df: pd.DataFrame, take_profit: float = 3.0, stop_loss: float = 2.0,
+                   max_hold_minutes: int = 30) -> pd.Series:
     """
-    스캘핑 레이블링: 진입 후 익절(5%) vs 손절(3%)
+    스캘핑 레이블링: 진입 후 익절 vs 손절 (High/Low 기반)
 
-    1 = 익절 먼저 도달 (매수 신호)
-    0 = 손절 먼저 도달 또는 타임아웃 (매수 금지)
+    1 = 장중 High가 TP에 먼저 도달 (매수 신호)
+    0 = 장중 Low가 SL에 먼저 도달 또는 타임아웃 (매수 금지)
+
+    Close 대신 High/Low를 사용하여 실제 장중 가격 움직임 반영.
+    같은 봉에서 TP/SL 동시 도달 시 Close 기준으로 판정.
     """
 
     labels = pd.Series(index=df.index, dtype=float)
+    high  = df['High'].values
+    low   = df['Low'].values
     close = df['Close'].values
 
     for i in range(len(close) - max_hold_minutes):
@@ -68,13 +73,20 @@ def label_scalping(df: pd.DataFrame, take_profit: float = 5.0, stop_loss: float 
         tp_price = entry_price * (1 + take_profit / 100)
         sl_price = entry_price * (1 - stop_loss / 100)
 
-        label = 0  # 기본: 매수 금지
+        label = 0  # 기본: 매수 금지 (타임아웃 포함)
 
         for j in range(i + 1, min(i + max_hold_minutes + 1, len(close))):
-            if close[j] >= tp_price:
+            hit_tp = high[j] >= tp_price
+            hit_sl = low[j] <= sl_price
+
+            if hit_tp and hit_sl:
+                # 같은 봉에서 TP/SL 동시 도달 → Close 기준 판정
+                label = 1 if close[j] >= entry_price else 0
+                break
+            elif hit_tp:
                 label = 1  # 익절 도달
                 break
-            elif close[j] <= sl_price:
+            elif hit_sl:
                 label = 0  # 손절 도달
                 break
 
@@ -97,15 +109,15 @@ def train_scalping_model(ticker: str, df_raw: pd.DataFrame) -> dict:
     # 2. Labeling - 변동성에 맞게 TP/SL 자동 조정
     # 일평균 변동폭 계산
     avg_range = (df_raw['High'] / df_raw['Low'] - 1).mean() * 100
-    # TP = 변동폭의 1.5배, SL = 변동폭의 1배 (최소 TP=1.5%, SL=1.0%)
-    tp = max(round(avg_range * 1.5, 1), 1.5)
-    sl = max(round(avg_range * 1.0, 1), 1.0)
-    # 사용자 요청 상한: TP=5%, SL=3%
-    tp = min(tp, 5.0)
-    sl = min(sl, 3.0)
+    # TP = 변동폭의 1.2배, SL = 변동폭의 0.8배 (현실적 스캘핑 범위)
+    tp = max(round(avg_range * 1.2, 1), 0.8)
+    sl = max(round(avg_range * 0.8, 1), 0.5)
+    # 상한: TP=3%, SL=2% (스캘핑 현실 범위)
+    tp = min(tp, 3.0)
+    sl = min(sl, 2.0)
 
-    print(f"  2. Labeling (TP={tp}%, SL={sl}%, MaxHold=60min)...")
-    labels = label_scalping(df_raw, take_profit=tp, stop_loss=sl, max_hold_minutes=60)
+    print(f"  2. Labeling (TP={tp}%, SL={sl}%, MaxHold=30min)...")
+    labels = label_scalping(df_raw, take_profit=tp, stop_loss=sl, max_hold_minutes=30)
 
     # Feature 선택
     feature_cols = [c for c in features.columns if c not in ['close', 'volume',
@@ -176,30 +188,36 @@ def train_scalping_model(ticker: str, df_raw: pd.DataFrame) -> dict:
     print(f"     Accuracy: {accuracy*100:.2f}%")
     print(f"     F1 Score: {f1:.3f}")
 
-    # 7. 백테스팅 (테스트 구간)
+    # 7. 백테스팅 (테스트 구간) — High/Low 기반
     print(f"  6. Backtesting...")
 
-    # 매수 신호가 1인 경우만 진입
     test_trades = []
     close_prices = df_raw['Close'].reindex(X_test.index).values
+    high_prices  = df_raw['High'].reindex(X_test.index).values
+    low_prices   = df_raw['Low'].reindex(X_test.index).values
 
     for i in range(len(y_pred)):
         if y_pred[i] == 1 and i < len(close_prices):
             entry_price = close_prices[i]
 
-            # 이후 60분 내 결과 확인
+            # 이후 30분 내 결과 확인 (High/Low 기반)
             trade_result = 0
-            for j in range(i + 1, min(i + 61, len(close_prices))):
-                pnl = (close_prices[j] / entry_price - 1) * 100
-                if pnl >= tp:
+            for j in range(i + 1, min(i + 31, len(close_prices))):
+                hit_tp = high_prices[j] >= entry_price * (1 + tp / 100)
+                hit_sl = low_prices[j] <= entry_price * (1 - sl / 100)
+
+                if hit_tp and hit_sl:
+                    trade_result = tp if close_prices[j] >= entry_price else -sl
+                    break
+                elif hit_tp:
                     trade_result = tp
                     break
-                elif pnl <= -sl:
+                elif hit_sl:
                     trade_result = -sl
                     break
 
-            if trade_result == 0 and i + 60 < len(close_prices):
-                trade_result = (close_prices[min(i + 60, len(close_prices) - 1)] / entry_price - 1) * 100
+            if trade_result == 0 and i + 30 < len(close_prices):
+                trade_result = (close_prices[min(i + 30, len(close_prices) - 1)] / entry_price - 1) * 100
 
             test_trades.append(trade_result)
 
@@ -278,7 +296,7 @@ def train_universal_scalping_model(tickers: list, models_dir: str) -> bool:
     이후 ScalpingBot이 실거래 결과로 partial_fit 업데이트.
 
     Args:
-        tickers:    학습 대상 종목 코드 목록
+        tickers:    학습 대상 종목 코드 목록전체 프로그램 소스를
         models_dir: models/ 디렉터리 절대 경로
 
     Returns:
@@ -301,9 +319,9 @@ def train_universal_scalping_model(tickers: list, models_dir: str) -> bool:
 
         features = create_scalping_features(df)
         avg_range = (df['High'] / df['Low'] - 1).mean() * 100
-        tp = min(max(round(avg_range * 1.5, 1), 1.5), 5.0)
-        sl = min(max(round(avg_range * 1.0, 1), 1.0), 3.0)
-        labels = label_scalping(df, take_profit=tp, stop_loss=sl)
+        tp = min(max(round(avg_range * 1.2, 1), 0.8), 3.0)
+        sl = min(max(round(avg_range * 0.8, 1), 0.5), 2.0)
+        labels = label_scalping(df, take_profit=tp, stop_loss=sl, max_hold_minutes=30)
 
         cols = [c for c in features.columns
                 if c not in ['close', 'volume', 'ma_5m', 'ma_10m', 'ma_20m', 'ma_60m']]
@@ -348,7 +366,7 @@ def main():
     print("=" * 70)
     print("Scalping Model Training - Surging Stocks TOP 20")
     print("=" * 70)
-    print("  TP=5%, SL=3%, MaxHold=60min, Interval=1min")
+    print("  TP=adaptive, SL=adaptive, MaxHold=30min, Interval=1min")
     print()
 
     # 급등주 목록 로드 (오프닝 서지 우선, 없으면 기존 파일)
